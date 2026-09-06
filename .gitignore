@@ -1,0 +1,10 @@
+# 编译产物
+dist/
+*.apk
+
+# SDK 相关
+sdk25/
+
+# 其他
+Thumbs.db
+.DS_Store

@@ -1,0 +1,315 @@
+#!/bin/sh
+#
+# speedtest backend: control the better-speedtest CLI.
+#
+# Subcommands (all write JSON to stdout unless noted):
+#   backend start  [--src auto|cnspeed|cdn|ookla] [--node <kw>]
+#                  [--dur <seconds>] [--mode both|down|up] [--multi <n>]
+#   backend stop
+#   backend status
+#   backend nodes  [--src cnspeed|cdn|ookla|all]
+#   backend ip
+#   backend errlog   (plain text: tails of err.log + run.ndjson)
+#   backend version  (plain text)
+#
+# Runtime state/logs live in /tmp/speedtest (tmpfs -> no flash wear).
+# The binary is run with BETTER_SPEEDTEST_CONFIG pointing at the persistent
+# /etc/better-speedtest/config.json, so mcc-mnc.csv and custom CDN sources
+# are written/read in a stable, writable place.
+
+BIN=/usr/bin/better-speedtest
+RUN=/tmp/speedtest
+PIDFILE=$RUN/pid
+LOG=$RUN/run.ndjson
+ERRLOG=$RUN/err.log
+STARTTS=$RUN/start_ts
+ARGSFILE=$RUN/args
+CFG=/etc/better-speedtest/config.json
+
+ensure_dir() {
+	[ -d "$RUN" ] || mkdir -p "$RUN"
+}
+
+# Is this pid a live (non-zombie) process? kill -0 also succeeds for
+# zombies, so cross-check /proc/PID/status when readable.
+pid_alive() {
+	_pa=$1
+	[ -n "$_pa" ] || return 1
+	kill -0 "$_pa" 2>/dev/null || return 1
+	if [ -r "/proc/$_pa/status" ]; then
+		grep -q '^State:[[:space:]]*Z' "/proc/$_pa/status" 2>/dev/null && return 1
+	fi
+	return 0
+}
+
+is_running() {
+	[ -f "$PIDFILE" ] || return 1
+	pid_alive "$(cat "$PIDFILE" 2>/dev/null)"
+}
+
+json_ok() {
+	echo "{\"ok\":true,\"running\":$1}"
+}
+
+json_err() {
+	echo "{\"ok\":false,\"error\":\"$1\"}"
+}
+
+# escape a string for embedding inside JSON quotes
+json_esc() {
+	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n\r\t' '   ' | cut -c1-200
+}
+
+# fractional sleep needs BusyBox FEATURE_FANCY_SLEEP; probe once and fall back
+# to integer seconds so the script behaves on any OpenWrt busybox build.
+FSLEEP_FRAC=1
+if ! sleep 0.1 2>/dev/null; then
+	FSLEEP_FRAC=0
+fi
+fsleep() {
+	if [ "$FSLEEP_FRAC" = 1 ]; then
+		sleep "$1"
+	else
+		sleep 1
+	fi
+}
+
+cmd_start() {
+	ensure_dir
+	if is_running; then
+		json_err "已有测速在运行"
+		return 0
+	fi
+
+	# --- validate binary ----------------------------------------------------
+	if [ ! -x "$BIN" ]; then
+		json_err "测速程序缺失: $BIN"
+		return 0
+	fi
+
+	# --- defaults -----------------------------------------------------------
+	src=auto
+	node=
+	dur=10
+	mode=both
+	multi=1
+
+	# --- parse args ----------------------------------------------------------
+	# NOTE: value-taking flags must verify that a value actually follows.
+	# Older builds used a plain `--node) node=$2; shift 2` here: when the
+	# caller passed `--node` with an EMPTY value dropped, the next flag
+	# (`--dur`) was swallowed as the node keyword and dur became ""
+	# -> "invalid dur"/"invalid node" and every start failed.
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			--src)
+				if [ "$#" -ge 2 ] && [ -n "$2" ]; then src=$2; shift 2; else shift; fi ;;
+			--node)
+				if [ "$#" -ge 2 ] && [ -n "$2" ]; then node=$2; shift 2; else shift; fi ;;
+			--dur)
+				if [ "$#" -ge 2 ] && [ -n "$2" ]; then dur=$2; shift 2; else shift; fi ;;
+			--mode)
+				if [ "$#" -ge 2 ] && [ -n "$2" ]; then mode=$2; shift 2; else shift; fi ;;
+			--multi)
+				if [ "$#" -ge 2 ] && [ -n "$2" ]; then multi=$2; shift 2; else shift; fi ;;
+			*) shift ;;
+		esac
+	done
+
+	# --- validate -----------------------------------------------------------
+	case "$src" in
+		auto|cnspeed|cdn|ookla) ;;
+		*) json_err "invalid src"; return 0 ;;
+	esac
+	case "$mode" in
+		both|down|up) ;;
+		*) json_err "invalid mode"; return 0 ;;
+	esac
+	case "$dur" in
+		''|*[!0-9]*) dur=10 ;;
+	esac
+	[ "$dur" -ge 1 ] 2>/dev/null || dur=1
+	[ "$dur" -le 300 ] 2>/dev/null || dur=300
+	case "$multi" in
+		''|*[!0-9]*) multi=1 ;;
+	esac
+	[ "$multi" -lt 1 ] 2>/dev/null && multi=1
+	[ "$multi" -gt 16 ] 2>/dev/null && multi=16
+
+	# node must be a safe plain string (no shell/flag injection). The value
+	# only ever travels through argv (never a second shell), but keep a
+	# conservative guard: no leading dash and no shell metacharacters.
+	# `/ * ?` are allowed on purpose (IP:port / city / name keywords).
+	if [ -n "$node" ]; then
+		node=$(printf '%s' "$node" | tr '\n\r\t' '   ')
+		case "$node" in
+			-*) json_err "invalid node"; return 0 ;;
+		esac
+		node_bad=$(printf '\047\042\140\044\174\046\073\074\076')
+		while [ -n "$node_bad" ]; do
+			_ch=${node_bad%"${node_bad#?}"}
+			case "$node" in
+				*"$_ch"*) json_err "invalid node"; return 0 ;;
+			esac
+			node_bad=${node_bad#?}
+		done
+	fi
+
+	# --- build argv ---------------------------------------------------------
+	set -- "$BIN" test --json --src "$src" --dur "$dur"
+	[ "$multi" -gt 1 ] 2>/dev/null && set -- "$@" --multi "$multi"
+	if [ -n "$node" ]; then
+		set -- "$@" --node "$node"
+	fi
+	case "$mode" in
+		down) set -- "$@" --no-upload ;;
+		up) set -- "$@" --no-download ;;
+	esac
+
+	# --- record run meta ----------------------------------------------------
+	: > "$LOG"
+	: > "$ERRLOG"
+	date +%s > "$STARTTS"
+	printf '%s' "$src|$node|$dur|$mode|$multi" > "$ARGSFILE"
+	rm -f "$PIDFILE"
+
+	# --- launch (detached) ----------------------------------------------------
+	# The inner `sh -c` writes its OWN $$ to the pidfile and then exec()s the
+	# binary, so the pidfile always holds the real better-speedtest pid.
+	# This is deliberately NOT `$!`-based: busybox setsid forks by default
+	# (`$!` then points at a wrapper that exits instantly), so the old code
+	# made status/stop consider every run "not running" and the UI flipped to
+	# "失败" milliseconds after GO.
+	export BETTER_SPEEDTEST_CONFIG="$CFG"
+	if command -v setsid >/dev/null 2>&1; then
+		setsid sh -c 'export HOME=/tmp/speedtest; echo $$ > "$1"; shift; exec "$@"' \
+			_ "$PIDFILE" "$@" > "$LOG" 2>> "$ERRLOG" < /dev/null &
+	else
+		sh -c 'export HOME=/tmp/speedtest; echo $$ > "$1"; shift; exec "$@"' \
+			_ "$PIDFILE" "$@" > "$LOG" 2>> "$ERRLOG" < /dev/null &
+	fi
+
+	# --- wait for the pidfile + a small grace period -------------------------
+	# If the binary dies instantly (config/network problem), surface the
+	# stderr tail instead of pretending a run is active.
+	_i=0
+	while [ "$_i" -lt 12 ]; do
+		[ -s "$PIDFILE" ] && break
+		fsleep 0.2
+		_i=$((_i + 1))
+	done
+	pid=$(cat "$PIDFILE" 2>/dev/null)
+	if [ -z "$pid" ]; then
+		json_err "启动失败：未能记录进程号"
+		return 0
+	fi
+	fsleep 1
+	if ! pid_alive "$pid"; then
+		if [ -s "$LOG" ]; then
+			# produced NDJSON then exited quickly: the log carries the
+			# error/result line; report ok with running=0 and let the UI
+			# render the real reason from the log.
+			json_ok 0
+			return 0
+		fi
+		diag=$(json_esc "$(tail -n 3 "$ERRLOG" 2>/dev/null)")
+		if [ -n "$diag" ]; then
+			json_err "进程立即退出: $diag"
+		else
+			json_err "进程立即退出（无错误日志）"
+		fi
+		return 0
+	fi
+
+	json_ok 1
+}
+
+cmd_stop() {
+	ensure_dir
+	if [ -f "$PIDFILE" ]; then
+		pid=$(cat "$PIDFILE")
+		if [ -n "$pid" ]; then
+			kill "$pid" 2>/dev/null
+			fsleep 0.5
+			kill -9 "$pid" 2>/dev/null
+		fi
+		rm -f "$PIDFILE"
+	fi
+	json_ok 0
+}
+
+cmd_status() {
+	ensure_dir
+	if is_running; then
+		running=1
+		pid=$(cat "$PIDFILE" 2>/dev/null)
+	else
+		running=0
+		pid=
+	fi
+	ts=$(cat "$STARTTS" 2>/dev/null)
+	[ -n "$ts" ] || ts=0
+	args=$(cat "$ARGSFILE" 2>/dev/null)
+	# split recorded args on '|' for convenience
+	IFS='|' read -r s_ node_ dur_ mode_ multi_ <<EOF
+$args
+EOF
+	node_=$(json_esc "$node_")
+	echo "{\"ok\":true,\"running\":$running,\"pid\":\"$pid\",\"start_ts\":$ts," \
+		"\"src\":\"$s_\",\"node\":\"$node_\",\"dur\":\"$dur_\",\"mode\":\"$mode_\",\"multi\":\"$multi_\"}"
+}
+
+cmd_nodes() {
+	src=all
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			--src)
+				if [ "$#" -ge 2 ] && [ -n "$2" ]; then src=$2; shift 2; else shift; fi ;;
+			*) shift ;;
+		esac
+	done
+	case "$src" in
+		cnspeed|cdn|ookla|all) ;;
+		*) src=all ;;
+	esac
+	BETTER_SPEEDTEST_CONFIG="$CFG" "$BIN" nodes --src "$src" 2>>"$ERRLOG"
+}
+
+cmd_ip() {
+	BETTER_SPEEDTEST_CONFIG="$CFG" "$BIN" ip 2>>"$ERRLOG"
+}
+
+# plain-text diagnostic tail: shown in the UI when a run fails without a
+# machine-readable error line
+cmd_errlog() {
+	ensure_dir
+	echo "== err.log (tail) =="
+	tail -n 30 "$ERRLOG" 2>/dev/null
+	echo "== run.ndjson (tail) =="
+	tail -n 12 "$LOG" 2>/dev/null
+}
+
+cmd_version() {
+	if [ -x "$BIN" ]; then
+		BETTER_SPEEDTEST_CONFIG="$CFG" "$BIN" version 2>&1
+	else
+		echo "binary missing"
+	fi
+}
+
+# --- dispatch --------------------------------------------------------------
+cmd="$1"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+	start) cmd_start "$@" ;;
+	stop) cmd_stop "$@" ;;
+	status) cmd_status "$@" ;;
+	nodes) cmd_nodes "$@" ;;
+	ip) cmd_ip "$@" ;;
+	errlog) cmd_errlog "$@" ;;
+	version) cmd_version "$@" ;;
+	*)
+		echo "{\"ok\":false,\"error\":\"unknown command\"}"
+		exit 1
+		;;
+esac

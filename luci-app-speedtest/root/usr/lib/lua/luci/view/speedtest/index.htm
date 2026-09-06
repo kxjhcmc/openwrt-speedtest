@@ -1,0 +1,678 @@
+<%+header%>
+<%
+local base = luci.dispatcher.build_url("admin", "network", "speedtest")
+%>
+<script type="text/javascript">
+window.BST_API = '<%=base%>';
+</script>
+
+<style>
+:root {
+	--bg0: #0d1322;
+	--bg1: #0f1a33;
+	--accent: #63e0ff;
+	--accent2: #8b8bff;
+	--up: #ff7a59;
+	--dl: #4fd8ff;
+	--txt: #e9f1ff;
+	--muted: #8496b8;
+	--card: rgba(20, 34, 60, 0.55);
+	--line: rgba(120, 160, 220, 0.18);
+}
+.speedtest-wrap * { box-sizing: border-box; }
+/* Responsive width: grow on wide screens to fill the viewport, capped so the
+   gauge/curve don't stretch past their design size; centered with auto margins.
+   The 60px top margin is deliberate: the Argon theme paints its own blue banner
+   above the content area, and the dark card used to creep up into it (24px was
+   not enough), leaving a thin, ugly sliver of Argon blue overlapping our own
+   dark background. Pushing the card down clears that banner completely. */
+.speedtest-wrap { width: min(96vw, 1200px); margin: 60px auto 24px; padding: 28px 16px 40px;
+	font-family: "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC",
+		"Microsoft YaHei", sans-serif; color: var(--txt); }
+/* dark background painted directly on the wrapper.
+   (A previous build used a position:fixed z-index:0 overlay div here - but
+   a positioned z-index:0 child paints ON TOP of the non-positioned
+   results/settings blocks per CSS painting order and hid them.) */
+.speedtest-wrap { background: radial-gradient(1200px 800px at 50% -10%, var(--bg1) 0%, var(--bg0) 60%), var(--bg0);
+	border-radius: 16px; }
+
+/* main layout: single column on narrow screens, two columns on wide screens
+   (gauge + curve on the left, results + settings stacked on the right) */
+.bst-main { display: grid; gap: 0 24px; grid-template-columns: 1fr; }
+@media (min-width: 900px) {
+	.bst-main { grid-template-columns: minmax(0, 1fr) minmax(280px, 380px); align-items: start; }
+	.bst-left, .bst-right { min-width: 0; }
+	.bst-right { padding-top: 6px; }
+}
+
+/* header */
+.bst-header { display:flex; flex-wrap: wrap; align-items:flex-start; justify-content:space-between;
+	padding: 6px 2px 14px; }
+.bst-logo { font-size: 22px; font-weight: 800; letter-spacing: 2px; }
+.bst-logo em { font-style: normal; color: var(--accent); }
+.bst-chip { font-size: 12px; color: var(--muted); text-align: right; line-height: 1.6;
+	max-width: 62%; margin-top: 2px; }
+.bst-chip b { color: var(--txt); font-weight: 600; }
+
+/* gauge */
+.gauge-box { position: relative; width: min(88vw, 380px); height: min(88vw, 380px);
+	margin: 0 auto; }
+@media (min-width: 900px) {
+	/* On wide screens give the gauge more room so it doesn't look tiny next
+	   to the right-hand results column. */
+	.gauge-box { width: min(420px, 100%); height: min(420px, 100%); }
+}
+#gauge { width: 100%; height: 100%; display: block; }
+
+/* center content overlay: idle/done shows GO button, running shows the live
+   speed readout. */
+.center-overlay { position: absolute; inset: 0; display:flex; flex-direction:column;
+	align-items:center; justify-content:center; pointer-events:none; }
+.center-overlay .go-btn { pointer-events:auto; }
+.live { display:none; flex-direction:column; align-items:center; pointer-events:none;
+	min-width: 0; }
+/* idle/done: center the GO button on the dial (no needle drawn yet). */
+.center-overlay.idle,
+.center-overlay.done { justify-content: center; }
+/* running: the needle sweeps the upper 270° of the dial (135° -> 405° going
+   over the top). The lower part of the dial (around the 90° / straight-down
+   position) is NEVER crossed by the needle, so we park the speed readout
+   there - well clear of the hub dot and every possible needle direction. */
+.center-overlay.running { justify-content: flex-end; padding-bottom: 22%; }
+.center-overlay.running .go-btn { display:none; }
+.center-overlay.running .live { display:flex; }
+.center-overlay.done .go-btn { display:block; letter-spacing:1px; }
+.center-overlay.done .live { display:none; }
+.center-val { font-size: 54px; font-weight: 800; letter-spacing: 1px; line-height:1; }
+.center-unit { font-size: 15px; color: var(--muted); margin-top: 8px; letter-spacing: 3px; }
+.center-phase { margin-top: 10px; font-size: 14px; color: var(--muted); min-height: 20px;
+	max-width: 88%; text-align: center; line-height: 1.3; word-break: break-word; }
+.center-phase.err { color: #ff8a8a; }
+/* active node name shown directly below the gauge ring (outside the
+   .center-overlay, so it never collides with the needle). */
+.center-node { margin-top: 10px; font-size: 14px; font-weight: 700; color: var(--accent);
+	min-height: 20px; text-align: center; letter-spacing: 1px;
+	max-width: 100%; word-break: break-word; padding: 0 8px; }
+
+/* GO button */
+.go-btn { width: 128px; height: 128px; border-radius: 50%; border: 3px solid rgba(255,255,255,.85);
+	background: radial-gradient(circle at 30% 25%, #ffffff, #9fe8ff 40%, var(--accent) 100%);
+	color: #05222f; font-size: 30px; font-weight: 800; letter-spacing: 4px; cursor:pointer;
+	box-shadow: 0 0 28px rgba(99,224,255,.45); transition: transform .12s ease, box-shadow .2s ease; }
+.go-btn:hover { transform: scale(1.05); box-shadow: 0 0 40px rgba(99,224,255,.7); }
+.go-btn:active { transform: scale(.96); }
+.go-btn.done { font-size: 16px; letter-spacing: 1px; }
+
+/* curve */
+.curve-box { margin: 6px auto 0; max-width: 620px; height: 70px; opacity:0; transition: opacity .3s; }
+.curve-box.active { opacity:1; }
+#curve { width:100%; height:100%; display:block; }
+
+/* results */
+.results { display:flex; gap:12px; margin-top: 22px; }
+@media (min-width: 900px) {
+	/* On wide screens results move into the right column. */
+	.results { margin-top: 0; }
+}
+.res-card { flex:1; background: var(--card); border:1px solid var(--line); border-radius:12px;
+	padding: 14px 12px 12px; text-align:center; }
+.res-card .k { font-size: 11px; letter-spacing:2px; color: var(--muted); }
+.res-card .v { font-size: 30px; font-weight: 800; margin-top:6px; }
+.res-card .v .unit { font-size: 12px; color: var(--muted); font-weight:400; margin-left: 2px; }
+.res-card .s { font-size: 11px; color: var(--muted); margin-top:6px; line-height:1.5; }
+.res-card.dl .v { color: var(--dl); }
+.res-card.ul .v { color: var(--up); }
+.res-card.ping .v { color: var(--accent2); }
+
+/* settings */
+.settings { margin-top: 22px; background: var(--card); border:1px solid var(--line);
+	border-radius:12px; padding: 14px 16px; }
+@media (min-width: 900px) {
+	.settings { margin-top: 16px; }
+}
+.settings .row { display:flex; flex-wrap:wrap; gap:14px; align-items:center; }
+.settings label { display:flex; flex-direction:column; font-size:11px; color:var(--muted);
+	letter-spacing:1px; gap:5px; }
+.settings select, .settings input {
+	background: rgba(8,16,32,.6); color: var(--txt); border:1px solid var(--line);
+	border-radius:8px; padding:7px 9px; font-size:14px; min-width: 96px; }
+.settings input[type=text] { min-width: 150px; }
+.btn { background: var(--accent); color: #05222f; border:0; border-radius:10px;
+	padding: 9px 16px; font-weight:700; cursor:pointer; font-size:14px; }
+.btn:hover { filter: brightness(1.1); }
+.btn:disabled { opacity:.5; cursor:not-allowed; }
+.status-line { margin-top: 14px; font-size: 12px; color: var(--muted); min-height: 16px; text-align:center; }
+.status-line.err { color: #ff7a7a; }
+.hint { margin-top: 10px; font-size: 11px; color: var(--muted); text-align:center; }
+</style>
+
+<div class="speedtest-wrap">
+	<div class="bst-header">
+		<div class="bst-logo"><em>SPEED</em>TEST<span style="font-weight:400;font-size:12px;color:var(--muted)">&nbsp;· 多源测速</span></div>
+		<div class="bst-chip" id="chip">—</div>
+	</div>
+
+	<div class="bst-main">
+		<div class="bst-left">
+			<div class="gauge-box">
+				<canvas id="gauge" width="760" height="760"></canvas>
+				<div class="center-overlay" id="centerOv">
+					<button class="go-btn" id="goBtn">GO</button>
+					<div class="live" id="live">
+						<div class="center-val" id="cval">0</div>
+						<div class="center-unit" id="cunit">Mbps</div>
+						<div class="center-phase" id="cphase">等待开始</div>
+					</div>
+				</div>
+			</div>
+			<!-- node name sits below the ring, not inside the overlay, so the
+			     needle can never collide with it. -->
+			<div class="center-node" id="cnode"></div>
+
+			<div class="curve-box" id="curveBox"><canvas id="curve" width="1240" height="140"></canvas></div>
+
+			<div class="status-line" id="statusLine">—</div>
+			<div class="hint">点击 <b>GO</b> 开始测速 · 仅测经路由器转发的实际链路</div>
+		</div>
+
+		<div class="bst-right">
+			<div class="results" id="results">
+				<div class="res-card ping">
+					<div class="k">延迟 PING</div>
+					<div class="v" id="rvPing">—</div>
+					<div class="s" id="rsPing">—</div>
+				</div>
+				<div class="res-card dl">
+					<div class="k">下载 DOWNLOAD</div>
+					<div class="v" id="rvDl">—</div>
+					<div class="s" id="rsDl">—</div>
+				</div>
+				<div class="res-card ul">
+					<div class="k">上传 UPLOAD</div>
+					<div class="v" id="rvUl">—</div>
+					<div class="s" id="rsUl">—</div>
+				</div>
+			</div>
+
+			<div class="settings">
+				<div class="row">
+					<label>测速源<select id="setSrc">
+						<option value="auto">自动选择</option>
+						<option value="cnspeed">全球网测</option>
+						<option value="cdn">CDN</option>
+						<option value="ookla">Speedtest.net</option>
+					</select></label>
+					<label>方向<select id="setMode">
+						<option value="both">下载 + 上传</option>
+						<option value="down">仅下载</option>
+						<option value="up">仅上传</option>
+					</select></label>
+					<label>时长(秒)<select id="setDur">
+						<option>5</option>
+						<option selected>10</option>
+						<option>15</option>
+						<option>30</option>
+					</select></label>
+					<label>多源并发<select id="setMulti">
+						<option selected>1</option>
+						<option>2</option>
+						<option>4</option>
+						<option>8</option>
+					</select></label>
+					<label>指定节点<input type="text" id="setNode" placeholder="可留空(自动选优)" /></label>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+
+<script type="text/javascript">
+(function () {
+	"use strict";
+	var API = window.BST_API;
+	var $ = function (id) { return document.getElementById(id); };
+
+	var goBtn = $("goBtn"), centerOv = $("centerOv"),
+		cval = $("cval"), cunit = $("cunit"), cphase = $("cphase"), cnode = $("cnode"),
+		chip = $("chip"), statusLine = $("statusLine"),
+		gauge = $("gauge"), gctx = gauge.getContext("2d"),
+		curveBox = $("curveBox"), curve = $("curve"), cctx = curve.getContext("2d");
+
+	// 270° gauge: 0 at lower-left (135°), climbing over the top (100 at 270°),
+	// down to 5G at the lower-right (405°). Values are log-scaled so the big
+	// range reads evenly.
+	var TICKS = [0, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000];
+	var LABELS = ["0", "5", "10", "20", "50", "100", "200", "500", "1G", "2G", "5G"];
+	// 270° sweep: 0 at lower-left (135°), climbing over the top (100 at 270°),
+	// down to 5G at the lower-right (405°). Clockwise = positive angle.
+	var START = Math.PI * 0.75;           // 135°  lower-left (0 point)
+	var SWEEP = Math.PI * 1.5;            // +270° sweeping clockwise to lower-right
+
+	var state = {
+		idle: true, running: false, done: false,
+		phase: "idle", cur: 0, peak: 0,
+		offset: 0,                 // byte offset into the NDJSON log
+		dlSeries: [], ulSeries: [], // {t, v}
+		result: null,
+		probes: [],
+		nodeName: ""               // current node name (e.g. "成都电信")
+	};
+
+	var nodeSel = {};
+
+	/* ---------- gauge drawing ---------- */
+	function tickIndex(v) {
+		if (v <= 0) return 0;
+		for (var i = 1; i < TICKS.length; i++) {
+			if (v <= TICKS[i]) {
+				var a = TICKS[i-1], b = TICKS[i];
+				return (i - 1) + (v - a) / (b - a);
+			}
+		}
+		return TICKS.length - 1;
+	}
+	function frac(v) { return tickIndex(v) / (TICKS.length - 1); }
+	function pt(cx, cy, r, f) {
+		var a = START + f * SWEEP;
+		// canvas arc uses the y-down convention (angle measured clockwise),
+		// so the point must use y = cy + r*sin(a) to stay on the same arc
+		// as the background/progress arcs. The old "- r*sin(a)" mirrored the
+		// ticks/labels/needle to the opposite side of the gauge.
+		return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
+	}
+	function drawGauge(value, phaseColor) {
+		var dpr = window.devicePixelRatio || 1;
+		var w = gauge.clientWidth, h = gauge.clientHeight;
+		if (!w || !h) return;
+		if (gauge.width !== w * dpr) { gauge.width = w * dpr; gauge.height = h * dpr; }
+		gctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+		gctx.clearRect(0, 0, w, h);
+		var half = Math.min(w, h) / 2;
+		var cx = w/2, cy = h/2 + 6;
+		// Reserve padding for the tick labels so they never clip at the edge.
+		// (Old code used R = half-22 and labels at R+30 -> radius 178 > half(170)
+		//  so the outermost labels were cut off.)
+		var R = half - 52;
+		var f = Math.max(0, Math.min(1, frac(value)));
+
+		// ticks + labels (one per value, evenly spaced on the log scale)
+		gctx.fillStyle = "#8496b8";
+		gctx.textAlign = "center"; gctx.textBaseline = "middle";
+		gctx.font = "500 14px sans-serif";
+		var labR = R + 22;
+		for (var i = 0; i < TICKS.length; i++) {
+			var ff = frac(TICKS[i]);
+			var p1 = pt(cx, cy, R - 12, ff), p2 = pt(cx, cy, R + 9, ff);
+			gctx.strokeStyle = "rgba(180,200,240,.35)"; gctx.lineWidth = 3;
+			gctx.beginPath(); gctx.moveTo(p1.x, p1.y); gctx.lineTo(p2.x, p2.y); gctx.stroke();
+			var lab = pt(cx, cy, labR, ff);
+			gctx.fillText(LABELS[i] || String(TICKS[i]), lab.x, lab.y);
+		}
+
+		// background arc
+		gctx.lineCap = "round";
+		gctx.strokeStyle = "rgba(120,150,210,.18)"; gctx.lineWidth = 16;
+		gctx.beginPath();
+		gctx.arc(cx, cy, R, START, START + SWEEP);
+		gctx.stroke();
+
+		// progress arc
+		var col = phaseColor || "#63e0ff";
+		var grad = gctx.createLinearGradient(cx - R, cy, cx + R, cy);
+		grad.addColorStop(0, "#4fd8ff"); grad.addColorStop(1, "#8b8bff");
+		gctx.strokeStyle = grad; gctx.lineWidth = 16;
+		gctx.beginPath();
+		gctx.arc(cx, cy, R, START, START + SWEEP * f);
+		gctx.stroke();
+
+		// needle
+		var tip = pt(cx, cy, R - 34, f);
+		gctx.strokeStyle = "#ffffff"; gctx.lineWidth = 5; gctx.lineCap = "round";
+		gctx.beginPath(); gctx.moveTo(cx, cy); gctx.lineTo(tip.x, tip.y); gctx.stroke();
+		gctx.fillStyle = "#ffffff";
+		gctx.beginPath(); gctx.arc(cx, cy, 9, 0, Math.PI * 2); gctx.fill();
+	}
+
+	/* ---------- curve ---------- */
+	function drawCurve() {
+		var dpr = window.devicePixelRatio || 1;
+		var w = curve.clientWidth, h = curve.clientHeight;
+		if (curve.width !== w * dpr) { curve.width = w * dpr; curve.height = h * dpr; }
+		cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+		cctx.clearRect(0, 0, w, h);
+
+		var series = state.dlSeries.length ? state.dlSeries : state.ulSeries;
+		if (!series.length) return;
+		var max = 0;
+		state.dlSeries.concat(state.ulSeries).forEach(function (p) { if (p.v > max) max = p.v; });
+		max = max > 10 ? max : 10;
+
+		function plot(pts, color) {
+			if (!pts.length) return;
+			cctx.strokeStyle = color; cctx.lineWidth = 2.5; cctx.lineJoin = "round";
+			cctx.beginPath();
+			for (var i = 0; i < pts.length; i++) {
+				var x = (i / Math.max(1, pts.length - 1)) * (w - 6) + 3;
+				var y = h - 4 - (pts[i].v / max) * (h - 14);
+				i === 0 ? cctx.moveTo(x, y) : cctx.lineTo(x, y);
+			}
+			cctx.stroke();
+		}
+		plot(state.dlSeries, "#4fd8ff");
+		plot(state.ulSeries, "#ff7a59");
+	}
+
+	/* ---------- API helpers ---------- */
+	function getJSON(ep) {
+		return fetch(API + "/" + ep, { credentials: "same-origin" }).then(function (r) {
+			return r.json();
+		});
+	}
+	function getText(ep) {
+		return fetch(API + "/" + ep, { credentials: "same-origin" }).then(function (r) {
+			return r.text();
+		});
+	}
+
+	/* ---------- NDJSON parsing ---------- */
+	function processLines(text) {
+		var lines = text.split("\n");
+		for (var i = 0; i < lines.length; i++) {
+			var ln = lines[i].trim();
+			if (!ln || ln === "DONE") { continue; }
+			var o;
+			try { o = JSON.parse(ln); } catch (e) { continue; }
+			handleLine(o);
+		}
+	}
+	function handleLine(o) {
+		switch (o.phase) {
+		case "start":
+			setPhase("初始化…");
+			if (o.msg && /iface=(\S+)/.test(o.msg)) chip.dataset.iface = RegExp.$1;
+			break;
+		case "geo":
+			if (o.msg && /定位完成:\s*(.+)/.test(o.msg)) {
+				var g = RegExp.$1;            // e.g. 电信/四川/南充/1.2.3.4
+				var parts = g.split("/");
+				var text = [];
+				if (parts[0] && parts[0] !== g) text.push(parts[0]);
+				if (parts[1]) text.push(parts[1]);
+				if (parts[2]) text.push(parts[2]);
+				var ip = parts[3] || "";
+				var chipLines = [text.join(" · ") || "—"];
+				if (ip) chipLines.push("IP " + ip);
+				setChipText(chipLines);
+			} else if (o.msg) {
+				setPhase(o.msg);
+			}
+			break;
+		case "node":
+			/* Node name goes into its own slot below the ring, not into
+			   cphase - otherwise the next "download"/"upload" tick
+			   would immediately overwrite it ("成都电信" -> "上传中…"
+			   flash that was visible in the first screenshot). */
+			if (o.msg) setNode(o.msg);
+			break;
+		case "probe":
+			if (o.msg) {
+				setPhase("探测节点… " + o.msg);
+				state.probes.push(o.msg);
+			}
+			break;
+		case "download":
+			setPhase("下载中…");
+			state.cur = o.mbps || 0, state.peak = Math.max(state.peak, state.cur);
+			state.dlSeries.push({ t: o.t || 0, v: state.cur });
+			break;
+		case "upload":
+			setPhase("上传中…");
+			state.cur = o.mbps || 0; state.peak = Math.max(state.peak, state.cur);
+			state.ulSeries.push({ t: o.t || 0, v: state.cur });
+			break;
+		case "result":
+			state.result = o;
+			break;
+		case "error":
+			showError(o.msg || "测速失败");
+			break;
+		}
+	}
+
+	/* ---------- UI updates ---------- */
+	function setPhase(s) { state.phase = s; cphase.textContent = s; }
+	/* Node name lives in its own slot below the ring so the running-phase
+	   text ("下载中…" / "上传中…") can't clobber it. */
+	function setNode(s) {
+		state.nodeName = s || "";
+		cnode.textContent = state.nodeName;
+	}
+	function showError(msg) {
+		statusLine.textContent = "⚠ " + msg;
+		statusLine.className = "status-line err";
+		setPhase("失败");
+		cphase.className = "center-phase err";
+	}
+	function enterIdle() {
+		state.idle = true; state.running = false; state.done = false;
+		state.cur = 0; state.peak = 0; state.dlSeries = []; state.ulSeries = []; state.result = null; state.probes = [];
+		centerOv.className = "center-overlay";
+		goBtn.textContent = "GO";
+		goBtn.className = "go-btn";
+		cval.textContent = "0";
+		cphase.className = "center-phase";
+		setPhase("等待开始");
+		setNode("");                     // clear node on idle reset
+		curveBox.className = "curve-box";
+		resetResults();
+		statusLine.textContent = "—";
+		statusLine.className = "status-line";
+	}
+	function enterRunning() {
+		state.idle = false; state.running = true; state.done = false;
+		state.offset = 0; state.cur = 0; state.peak = 0;
+		state.dlSeries = []; state.ulSeries = []; state.result = null; state.probes = [];
+		centerOv.className = "center-overlay running";
+		cval.textContent = "0";
+		setNode("");                     // a new run starts with an empty node slot;
+		cphase.className = "center-phase";
+		setPhase("连接中…");
+		curveBox.className = "curve-box active";
+		resetResults();
+		statusLine.className = "status-line";
+	}
+	function enterDone() {
+		state.running = false; state.done = true;
+		stopPolling();
+		centerOv.className = "center-overlay done";
+		goBtn.className = "go-btn done";
+		goBtn.textContent = "重新测速";
+		renderResult();
+	}
+	function resetResults() {
+		$("rvPing").textContent = "—"; $("rsPing").textContent = "—";
+		$("rvDl").textContent = "—"; $("rsDl").textContent = "—";
+		$("rvUl").textContent = "—"; $("rsUl").textContent = "—";
+	}
+	function fmt(x) { return (Math.round(x * 100) / 100).toString(); }
+	/* set the numeric value of a result card, with a small muted "Mbps"
+	   suffix attached as a separate styled element so we don't have to splice
+	   HTML strings through innerHTML (which doesn't survive every LuCI theme
+	   / content-filter combination - see "800.7<small> Mbps</small>" bug). */
+	function setResultVal(el, n) {
+		while (el.firstChild) el.removeChild(el.firstChild);
+		el.appendChild(document.createTextNode(fmt(n)));
+		var unit = document.createElement("span");
+		unit.className = "unit";
+		unit.appendChild(document.createTextNode(" Mbps"));
+		el.appendChild(unit);
+	}
+	/* same idea for the chip block: build it from text nodes + elements so
+	   the " · " separators and "<br>" are real DOM, not HTML-source strings. */
+	function setChipText(lines) {
+		chip.textContent = "";
+		for (var i = 0; i < lines.length; i++) {
+			if (i > 0) chip.appendChild(document.createElement("br"));
+			chip.appendChild(document.createTextNode(lines[i]));
+		}
+	}
+	function renderResult() {
+		var r = state.result;
+		if (!r) {
+			// run ended without a machine-readable result: show the error we
+			// may have parsed from the NDJSON, else pull the backend stderr.
+			statusLine.className = "status-line err";
+			// fetch the err log tail to give the user the real reason
+			getText("errlog").then(function (t) {
+				var m = (t || "").replace(/[\r\n]+/g, " ").trim().slice(0, 300);
+				if (state.result) return;             // a result arrived meanwhile
+				statusLine.textContent = "⚠ 测速未收到结果" + (m ? " · " + m : "");
+			}).catch(function () {
+				statusLine.textContent = "⚠ 测速未收到结果";
+			});
+			return;
+		}
+		if (r.ping > 0) {
+			$("rvPing").textContent = r.ping.toFixed(1);
+			var pj = r.jitter > 0 ? "抖动 " + r.jitter.toFixed(1) + " ms" : "";
+			$("rsPing").textContent = pj;
+		}
+		if (r.dl_avg > 0) {
+			setResultVal($("rvDl"), r.dl_avg);
+			$("rsDl").textContent = "峰值 " + fmt(r.dl_peak) + " Mbps" +
+				(r.dl_conns > 0 ? " · " + r.dl_conns + " 连接" : "");
+		}
+		if (r.ul_avg > 0) {
+			setResultVal($("rvUl"), r.ul_avg);
+			$("rsUl").textContent = "峰值 " + fmt(r.ul_peak) + " Mbps" +
+				(r.ul_conns > 0 ? " · " + r.ul_conns + " 连接" : "");
+		}
+		var last = state.dlSeries.length ? state.dlSeries[state.dlSeries.length-1].v : 0;
+		// final gauge shows the max avg
+		drawGauge(Math.max(r.dl_avg, r.ul_avg, last), null);
+		var nodeInfo = [];
+		if (r.node) nodeInfo.push(r.node);
+		if (r.source) nodeInfo.push(r.source);
+		if (r.city) nodeInfo.push(r.city);
+		if (r.carrier) nodeInfo.push(r.carrier);
+		statusLine.textContent = "测速节点: " + (nodeInfo.join(" · ") || "—");
+		statusLine.className = "status-line";
+		setPhase("测速完成");
+	}
+
+	/* ---------- polling ---------- */
+	var pollTimer = null;
+	function startPolling() {
+		if (pollTimer) return;
+		pollTimer = setInterval(poll, 700);
+	}
+	function stopPolling() { clearInterval(pollTimer); pollTimer = null; }
+
+	function poll() {
+		getJSON("status").then(function (st) {
+			if (!st || st.ok === false) return;
+			if (st.running) {
+				if (state.idle) enterRunning();
+				state.running = true;
+				getLog();
+				return;
+			}
+			// not running
+			if (state.running) {
+				// run just ended -> fetch final result
+				getLog().then(function () {
+					enterDone();
+				});
+			}
+		}).catch(function (e) {
+			stopPolling();
+			var msg = state.running ? "后端连接失败" : "测速状态查询失败";
+			// leave the running overlay so the GO/重试 button is visible again
+			state.running = false; state.idle = false; state.done = true;
+			centerOv.className = "center-overlay done";
+			goBtn.className = "go-btn done";
+			goBtn.textContent = "重新测速";
+			showError(msg);
+		});
+	}
+	function getLog() {
+		return getText("log").then(function (text) {
+			// Only consume up to the last complete line. If we advanced the
+			// offset past a half-written trailing line, that line (which could
+			// be the final "result") would be lost forever -> "失败".
+			var lastNL = text.lastIndexOf("\n");
+			if (lastNL < 0) { refreshLive(); return; }
+			var end = lastNL + 1;
+			if (end > state.offset) {
+				processLines(text.slice(state.offset, end));
+			}
+			state.offset = end;
+			refreshLive();
+		});
+	}
+	function refreshLive() {
+		if (!state.idle) {
+			cval.textContent = Math.round(state.cur);
+			drawGauge(state.cur, null);
+			drawCurve();
+		}
+	}
+
+	/* ---------- actions ---------- */
+	function startTest() {
+		var qs = "src=" + encodeURIComponent($("setSrc").value) +
+			"&mode=" + encodeURIComponent($("setMode").value) +
+			"&dur=" + encodeURIComponent($("setDur").value) +
+			"&multi=" + encodeURIComponent($("setMulti").value) +
+			"&node=" + encodeURIComponent($("setNode").value.trim());
+		statusLine.textContent = "启动中…";
+		getJSON("start?" + qs).then(function (r) {
+			if (r && r.ok === true) {
+				enterRunning();
+				startPolling();
+			} else {
+				showError(r && r.error ? r.error : "启动失败(可能已有测速在运行)");
+			}
+		}).catch(function () { showError("启动请求失败"); });
+	}
+	function stopTest() {
+		stopPolling();
+		getJSON("stop").then(function () { enterIdle(); }).catch(function () { enterIdle(); });
+	}
+
+	/* ---------- boot ---------- */
+	function boot() {
+		// load defaults from UCI
+		getJSON("config").then(function (c) {
+			if (!c) return;
+			if (c.src) $("setSrc").value = c.src;
+			if (c.mode) $("setMode").value = c.mode;
+			if (c.dur && ["5","10","15","30"].indexOf(String(c.dur)) >= 0) $("setDur").value = String(c.dur);
+			if (c.multi && ["1","2","4","8"].indexOf(String(c.multi)) >= 0) $("setMulti").value = String(c.multi);
+			if (c.node) $("setNode").value = c.node;
+		}).catch(function () {});
+		// show ISP/IP
+		getJSON("ip").then(function (d) {
+			if (d && d.ip) {
+				var t = [];
+				if (d.carrier) t.push(d.carrier);
+				if (d.province) t.push(d.province);
+				if (d.city) t.push(d.city);
+				setChipText([(t.join(" · ") || "未知位置"), "IP " + d.ip]);
+			}
+		}).catch(function () {});
+		// resume an in-progress run on page load
+		getJSON("status").then(function (st) {
+			if (st && st.running) { enterRunning(); startPolling(); }
+			else { drawGauge(0, null); }
+		}).catch(function () { drawGauge(0, null); });
+
+		goBtn.addEventListener("click", function () {
+			if (state.running) { stopTest(); return; }
+			startTest();
+		});
+	}
+	boot();
+})();
+</script>
+<%+footer%>

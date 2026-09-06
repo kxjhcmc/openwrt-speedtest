@@ -1,0 +1,17 @@
+# speedtest defaults (used as starting point in the Web UI)
+# All values can also be changed at run time from luci-app-speedtest.
+
+config speedtest 'defaults'
+	# auto | cnspeed | cdn | ookla
+	option src 'auto'
+	# default single-direction test duration in seconds
+	option dur '10'
+	# both | down | up
+	option mode 'both'
+	# multi-source aggregation (1..16); 1 = single source
+	option multi '1'
+	# optional node keyword (IP / city / name); leave empty for auto select
+	option node ''
+	# extra safety: force the WAN interface (see engine.wan_iface in
+	# /etc/better-speedtest/config.json); auto is fine for most routers
+	option wan_iface 'auto'

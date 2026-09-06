@@ -1,0 +1,34 @@
+#!/bin/sh /etc/rc.common
+# START=20
+# STOP=80
+#
+# speedtestd: prepare runtime/config directories for the speedtest backend.
+# Speed tests are launched on demand by luci-app-speedtest and are not a
+# resident daemon, so this script only ensures the writable state locations
+# exist (the /etc/better-speedtest dir on the overlay).
+
+START=20
+STOP=80
+
+service_start() {
+	# ensure the persistent config dir is present and writable
+	mkdir -p /etc/better-speedtest
+	chmod 0755 /etc/better-speedtest 2>/dev/null || true
+
+	# sanity-check the bundled binary
+	if [ ! -x /usr/bin/better-speedtest ]; then
+		logger -t speedtestd "better-speedtest binary missing" 2>/dev/null || true
+		return 0
+	fi
+	return 0
+}
+
+service_stop() {
+	# kill any leftover run
+	if [ -f /tmp/speedtest/pid ]; then
+		pid=$(cat /tmp/speedtest/pid 2>/dev/null)
+		[ -n "$pid" ] && kill "$pid" 2>/dev/null
+		rm -f /tmp/speedtest/pid
+	fi
+	return 0
+}

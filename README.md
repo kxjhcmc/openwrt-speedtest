@@ -41,14 +41,14 @@ openwrt-speedtest/
 
 本项目是**标准 OpenWrt 包**,可以融入你自建的 OpenWrt 源码树进行编译。有两种方式。
 
-### 方式一:作为 feeds 链接(推荐,开发调试用)
+### 作为 feeds 链接(推荐,开发调试用)
 
 把本仓库作为一个自定义 feeds 链接进 OpenWrt 源码的 `feeds.conf`。
 
 1. 进入 OpenWrt 源码目录,编辑 `feeds.conf`:
 
    ```
-   src-link speedtest_owrt /path/to/openwrt-speedtest
+   src-link speedtest_owrt https://github.com/kxjhcmc/openwrt-speedtest
    ```
 
    其中 `/path/to/openwrt-speedtest` 是本仓库的路径。
@@ -76,22 +76,6 @@ openwrt-speedtest/
    ```
 
    产物位于 `bin/packages/<target>/speedtest_owrt/`。
-
-### 方式二:作为独立包目录直接编译
-
-如果只想单独编译某个包,可以把包目录放进 SDK 的 `package/` 下,或用 `make package/<pkg>/compile` 直接指定路径。
-
-### 一键编译脚本
-
-仓库自带 `build.sh`,使用 OpenWrt 25.x SDK 一键把两个包编译为 `.apk` 产物到 `dist/`:
-
-```sh
-./build.sh                 # 使用 ../sdk25/extracted 下的 SDK,产物在 dist/
-SDK_DIR=/path/to/sdk ./build.sh   # 指定其它 SDK
-DIST=/path/to/out ./build.sh      # 指定产物输出目录
-```
-
-它会:链接 feeds → 更新索引 → 逐个 `clean` + `compile` → 把 `.apk` 复制到输出目录。
 
 ## 安装到路由器
 

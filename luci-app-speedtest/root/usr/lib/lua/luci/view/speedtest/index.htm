@@ -54,45 +54,72 @@ window.BST_API = '<%=base%>';
 	max-width: 62%; margin-top: 2px; }
 .bst-chip b { color: var(--txt); font-weight: 600; }
 
-/* gauge */
-.gauge-box { position: relative; width: min(88vw, 380px); height: min(88vw, 380px);
+/* gauge
+   The box is square (width == height). Canvas uses clientWidth/clientHeight
+   to lay out ticks/labels/arcs/needle, with cy = h/2 + 6 and R = half - 52.
+   With a square box the lowest label center sits at cy + 0.707*(R+22) ≈
+   cy + 0.707*(half - 30) ≈ 0.854*half + 4.2 + 4.2 below cy, leaving
+   (half - that) ≈ 0.146*half - 4.2 of empty space below the bottom-most
+   labels. That's where the live readout used to overflow into.
+   We crop that empty tail by giving the box a height of 0.85 * width so
+   the lowest labels sit ~flush with the box's bottom edge — the readout
+   below then hangs directly under the ring, not under a black gap. */
+.gauge-box { position: relative; width: min(88vw, 380px);
+	height: calc(min(88vw, 380px) * 0.85);
 	margin: 0 auto; }
 @media (min-width: 900px) {
 	/* On wide screens give the gauge more room so it doesn't look tiny next
 	   to the right-hand results column. */
-	.gauge-box { width: min(420px, 100%); height: min(420px, 100%); }
+	.gauge-box { width: min(420px, 100%); height: calc(min(420px, 100%) * 0.85); }
 }
 #gauge { width: 100%; height: 100%; display: block; }
 
-/* center content overlay: idle/done shows GO button, running shows the live
-   speed readout. */
+/* center content overlay: idle/done shows the GO button; running leaves the
+   dial alone and shows the live speed readout BELOW the ring (see .live). */
 .center-overlay { position: absolute; inset: 0; display:flex; flex-direction:column;
 	align-items:center; justify-content:center; pointer-events:none; }
 .center-overlay .go-btn { pointer-events:auto; }
-.live { display:none; flex-direction:column; align-items:center; pointer-events:none;
-	min-width: 0; }
-/* idle/done: center the GO button on the dial (no needle drawn yet). */
 .center-overlay.idle,
 .center-overlay.done { justify-content: center; }
-/* running: the needle sweeps the upper 270° of the dial (135° -> 405° going
-   over the top). The lower part of the dial (around the 90° / straight-down
-   position) is NEVER crossed by the needle, so we park the speed readout
-   there - well clear of the hub dot and every possible needle direction. */
-.center-overlay.running { justify-content: flex-end; padding-bottom: 22%; }
 .center-overlay.running .go-btn { display:none; }
-.center-overlay.running .live { display:flex; }
 .center-overlay.done .go-btn { display:block; letter-spacing:1px; }
-.center-overlay.done .live { display:none; }
-.center-val { font-size: 54px; font-weight: 800; letter-spacing: 1px; line-height:1; }
-.center-unit { font-size: 15px; color: var(--muted); margin-top: 8px; letter-spacing: 3px; }
-.center-phase { margin-top: 10px; font-size: 14px; color: var(--muted); min-height: 20px;
-	max-width: 88%; text-align: center; line-height: 1.3; word-break: break-word; }
+
+/* Live speed readout lives INSIDE the gauge, parked at the bottom (90°,
+   6-o'clock). The needle sweeps the upper 270° of the dial (135° -> 405°
+   going over the top), so the lower 90° (45° -> 135° via the bottom)
+   is never crossed by the needle. That gives us a safe ~R-wide patch at
+   the bottom of the dial where the digit and "Mbps" unit can sit
+   without ever colliding with the needle - and without leaving an empty
+   black gap between the ring and the readout.
+   font-size scales with the gauge so the digit fits inside the safe
+   patch on small phones. */
+.live { display:none; flex-direction:column; align-items:center;
+	pointer-events:none; min-width:0; padding: 0 8px;
+	position: absolute;
+	left: 50%;
+	/* Anchor at the very bottom of the dial. The dial center is cy =
+	   h/2 + 6 in canvas coords, so (50% + 6px) maps to that center;
+	   we then translate -50%/-50% to center the block on it, and
+	   nudge it down so the readout sits in the bottom 90° patch
+	   instead of on top of the hub. */
+	top: calc(50% + 6px);
+	transform: translate(-50%, calc(-50% + 70px)); }
+.speedtest-wrap.is-running .live { display:flex; }
+.center-val { font-size: clamp(28px, 9vw, 48px); font-weight: 800; letter-spacing: 1px;
+	line-height:1; color: var(--txt); }
+.center-unit { font-size: 13px; color: var(--muted); margin-top: 4px; letter-spacing: 3px; }
+/* Phase text ("下载中…" / "上传中…") lives in its own slot below the
+   gauge ring (outside the .center-overlay, so it never collides with
+   the needle). Kept the rule for legacy callers and to reserve
+   vertical space. */
+.center-phase { display:none; }
 .center-phase.err { color: #ff8a8a; }
-/* active node name shown directly below the gauge ring (outside the
-   .center-overlay, so it never collides with the needle). */
+/* active node + current phase shown directly below the gauge ring (outside
+   the .center-overlay, so it never collides with the needle). */
 .center-node { margin-top: 10px; font-size: 14px; font-weight: 700; color: var(--accent);
 	min-height: 20px; text-align: center; letter-spacing: 1px;
 	max-width: 100%; word-break: break-word; padding: 0 8px; }
+.center-node .phase { color: var(--txt); font-weight: 500; margin-left: 8px; }
 
 /* GO button */
 .go-btn { width: 128px; height: 128px; border-radius: 50%; border: 3px solid rgba(255,255,255,.85);
@@ -131,7 +158,10 @@ window.BST_API = '<%=base%>';
 	.settings { margin-top: 16px; }
 }
 .settings .row { display:flex; flex-wrap:wrap; gap:14px; align-items:center; }
-.settings label { display:flex; flex-direction:column; font-size:11px; color:var(--muted);
+/* .setting-item replaces the old <label><select/></label> wrapper that
+   triggered the duplicated-label bug on certain mobile WebViews. The
+   <label> here is just a sibling text, not a form-control wrapper. */
+.settings .setting-item { display:flex; flex-direction:column; font-size:11px; color:var(--muted);
 	letter-spacing:1px; gap:5px; }
 .settings select, .settings input {
 	background: rgba(8,16,32,.6); color: var(--txt); border:1px solid var(--line);
@@ -158,16 +188,22 @@ window.BST_API = '<%=base%>';
 				<canvas id="gauge" width="760" height="760"></canvas>
 				<div class="center-overlay" id="centerOv">
 					<button class="go-btn" id="goBtn">GO</button>
-					<div class="live" id="live">
-						<div class="center-val" id="cval">0</div>
-						<div class="center-unit" id="cunit">Mbps</div>
-						<div class="center-phase" id="cphase">等待开始</div>
-					</div>
+				</div>
+				<!-- Live speed readout lives INSIDE the gauge-box so
+				     position:absolute anchors to the dial box (not the
+				     page). Parked at the bottom of the dial — the lower
+				     90° of the dial is never crossed by the needle, so
+				     the digit is safe there and stays visually attached
+				     to the ring. -->
+				<div class="live" id="live">
+					<div class="center-val" id="cval">0</div>
+					<div class="center-unit" id="cunit">Mbps</div>
 				</div>
 			</div>
-			<!-- node name sits below the ring, not inside the overlay, so the
-			     needle can never collide with it. -->
-			<div class="center-node" id="cnode"></div>
+			<!-- node name + current phase ("下载中…" / "上传中…") sit below
+			     the ring, outside the overlay, so the needle can never
+			     collide with them. -->
+			<div class="center-node"><span id="cnode"></span><span class="phase" id="cphase"></span></div>
 
 			<div class="curve-box" id="curveBox"><canvas id="curve" width="1240" height="140"></canvas></div>
 
@@ -196,30 +232,55 @@ window.BST_API = '<%=base%>';
 
 			<div class="settings">
 				<div class="row">
-					<label>测速源<select id="setSrc">
-						<option value="auto">自动选择</option>
-						<option value="cnspeed">全球网测</option>
-						<option value="cdn">CDN</option>
-						<option value="ookla">Speedtest.net</option>
-					</select></label>
-					<label>方向<select id="setMode">
-						<option value="both">下载 + 上传</option>
-						<option value="down">仅下载</option>
-						<option value="up">仅上传</option>
-					</select></label>
-					<label>时长(秒)<select id="setDur">
-						<option>5</option>
-						<option selected>10</option>
-						<option>15</option>
-						<option>30</option>
-					</select></label>
-					<label>多源并发<select id="setMulti">
-						<option selected>1</option>
-						<option>2</option>
-						<option>4</option>
-						<option>8</option>
-					</select></label>
-					<label>指定节点<input type="text" id="setNode" placeholder="可留空(自动选优)" /></label>
+					<!--
+						label-as-wrapper pattern (<label>文字<select>…</select></label>)
+						triggers a known mobile-WebView quirk where the visible
+						label text is rendered once per <option> inside the wrapped
+						<select>, leaving a stack of duplicated "测速源" / "方向"
+						rows above the picker on narrow viewports. Switch to a
+						plain <div> + <label for=…> + <select id=…> so the label
+						text and the form control are independent siblings; the
+						label still binds to the control via for=/id=.
+					-->
+					<div class="setting-item">
+						<label for="setSrc">测速源</label>
+						<select id="setSrc">
+							<option value="auto">自动选择</option>
+							<option value="cnspeed">全球网测</option>
+							<option value="cdn">CDN</option>
+							<option value="ookla">Speedtest.net</option>
+						</select>
+					</div>
+					<div class="setting-item">
+						<label for="setMode">方向</label>
+						<select id="setMode">
+							<option value="both">下载 + 上传</option>
+							<option value="down">仅下载</option>
+							<option value="up">仅上传</option>
+						</select>
+					</div>
+					<div class="setting-item">
+						<label for="setDur">时长(秒)</label>
+						<select id="setDur">
+							<option>5</option>
+							<option selected>10</option>
+							<option>15</option>
+							<option>30</option>
+						</select>
+					</div>
+					<div class="setting-item">
+						<label for="setMulti">多源并发</label>
+						<select id="setMulti">
+							<option selected>1</option>
+							<option>2</option>
+							<option>4</option>
+							<option>8</option>
+						</select>
+					</div>
+					<div class="setting-item">
+						<label for="setNode">指定节点</label>
+						<input type="text" id="setNode" placeholder="可留空(自动选优)" />
+					</div>
 				</div>
 			</div>
 		</div>
@@ -442,25 +503,65 @@ window.BST_API = '<%=base%>';
 	/* ---------- UI updates ---------- */
 	function setPhase(s) { state.phase = s; cphase.textContent = s; }
 	/* Node name lives in its own slot below the ring so the running-phase
-	   text ("下载中…" / "上传中…") can't clobber it. */
+	   text ("下载中…" / "上传中…") can't clobber it.
+
+	   The backend's "node" event carries a one-line summary like
+	   "泸州电信 125.68.168.106:65499 ping=11ms 下载中". That string is
+	   useful as a one-shot diagnostic (it shows IP + ping) but it ends
+	   in the current phase ("下载中" / "上传中"), which collides visually
+	   with the live cphase readout ("下载中…" rendered right next to
+	   it on the page — see the earlier "下载中 下载中…" screenshot).
+
+	   Strategy:
+	   1. trim the trailing phase token ("下载中"/"上传中") off so it
+	      doesn't duplicate the live cphase readout;
+	   2. PIN the first announcement. The binary re-announces the node
+	      later in the run (phase switch / end-of-download probe) with a
+	      short "泸州电信 下载中" line that carries no endpoint/ping tail.
+	      Blindly overwriting made the row flick from the full diagnostic
+	      line to the bare node name near the end of the test (the
+	      user-visible jump between the two screenshots). So once a node
+	      name is shown, a re-announcement of the SAME first-word name is
+	      ignored; only a genuinely different node replaces it. */
 	function setNode(s) {
-		state.nodeName = s || "";
+		var raw = (s || "").trim();
+		if (!raw) { state.nodeName = ""; cnode.textContent = ""; return; }
+		// Drop a trailing phase word ("下载中" / "上传中", with or without
+		// the trailing "…" ellipsis the binary sometimes appends).
+		var cleaned = raw.replace(/\s+(?:下载中|上传中)…?\s*$/, "").trim();
+		if (!cleaned) cleaned = raw.split(/\s+/)[0];
+		// First whitespace-separated token is the human node name
+		// ("泸州电信"); anything after it is endpoint/ping diagnostics.
+		var newName = cleaned.split(/\s+/)[0];
+		var curName = state.nodeName ? state.nodeName.split(/\s+/)[0] : "";
+		if (curName && newName === curName) {
+			// Same node re-announced mid-run: keep the richer line we
+			// already show instead of letting it shrink to the bare name.
+			return;
+		}
+		state.nodeName = cleaned;
 		cnode.textContent = state.nodeName;
 	}
 	function showError(msg) {
 		statusLine.textContent = "⚠ " + msg;
 		statusLine.className = "status-line err";
 		setPhase("失败");
-		cphase.className = "center-phase err";
+		cphase.classList.add("err");
 	}
+	// Wrapper element used to toggle the running-state readout (the
+	// speed number lives outside the .center-overlay, so it needs a
+	// separate visibility hook from the overlay's own class).
+	var wrap = document.querySelector(".speedtest-wrap");
+
 	function enterIdle() {
 		state.idle = true; state.running = false; state.done = false;
 		state.cur = 0; state.peak = 0; state.dlSeries = []; state.ulSeries = []; state.result = null; state.probes = [];
 		centerOv.className = "center-overlay";
+		wrap.classList.remove("is-running");
 		goBtn.textContent = "GO";
 		goBtn.className = "go-btn";
 		cval.textContent = "0";
-		cphase.className = "center-phase";
+		cphase.classList.remove("err");
 		setPhase("等待开始");
 		setNode("");                     // clear node on idle reset
 		curveBox.className = "curve-box";
@@ -473,9 +574,10 @@ window.BST_API = '<%=base%>';
 		state.offset = 0; state.cur = 0; state.peak = 0;
 		state.dlSeries = []; state.ulSeries = []; state.result = null; state.probes = [];
 		centerOv.className = "center-overlay running";
+		wrap.classList.add("is-running");
 		cval.textContent = "0";
 		setNode("");                     // a new run starts with an empty node slot;
-		cphase.className = "center-phase";
+		cphase.classList.remove("err");
 		setPhase("连接中…");
 		curveBox.className = "curve-box active";
 		resetResults();
@@ -485,6 +587,7 @@ window.BST_API = '<%=base%>';
 		state.running = false; state.done = true;
 		stopPolling();
 		centerOv.className = "center-overlay done";
+		wrap.classList.remove("is-running");
 		goBtn.className = "go-btn done";
 		goBtn.textContent = "重新测速";
 		renderResult();
@@ -590,6 +693,7 @@ window.BST_API = '<%=base%>';
 			// leave the running overlay so the GO/重试 button is visible again
 			state.running = false; state.idle = false; state.done = true;
 			centerOv.className = "center-overlay done";
+			wrap.classList.remove("is-running");
 			goBtn.className = "go-btn done";
 			goBtn.textContent = "重新测速";
 			showError(msg);

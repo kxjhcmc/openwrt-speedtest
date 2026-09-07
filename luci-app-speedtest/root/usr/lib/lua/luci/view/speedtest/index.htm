@@ -20,13 +20,19 @@ window.BST_API = '<%=base%>';
 	--line: rgba(120, 160, 220, 0.18);
 }
 .speedtest-wrap * { box-sizing: border-box; }
-/* Responsive width: grow on wide screens to fill the viewport, capped so the
-   gauge/curve don't stretch past their design size; centered with auto margins.
+/* Responsive width: the wrapper is nested inside the theme's own content
+   container, which already has left/right padding. The old `width: 96vw`
+   measured the VIEWPORT, ignoring that padding, so the box overflowed its
+   parent: on phones the parent's padding showed as a dead margin on the
+   left while the right edge (3rd result card, node line) was clipped off
+   screen. vw-based sizing can never be "right" inside a padded parent -
+   use the parent-relative 100% + max-width cap instead: full-bleed on
+   phones, centered capped column on desktop.
    The 60px top margin is deliberate: the Argon theme paints its own blue banner
    above the content area, and the dark card used to creep up into it (24px was
    not enough), leaving a thin, ugly sliver of Argon blue overlapping our own
    dark background. Pushing the card down clears that banner completely. */
-.speedtest-wrap { width: min(96vw, 1200px); margin: 60px auto 24px; padding: 28px 16px 40px;
+.speedtest-wrap { width: 100%; max-width: 1200px; margin: 60px auto 24px; padding: 28px 16px 40px;
 	font-family: "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC",
 		"Microsoft YaHei", sans-serif; color: var(--txt); }
 /* dark background painted directly on the wrapper.
@@ -64,13 +70,25 @@ window.BST_API = '<%=base%>';
    We crop that empty tail by giving the box a height of 0.85 * width so
    the lowest labels sit ~flush with the box's bottom edge — the readout
    below then hangs directly under the ring, not under a black gap. */
-.gauge-box { position: relative; width: min(88vw, 380px);
-	height: calc(min(88vw, 380px) * 0.85);
+.gauge-box { position: relative; width: min(100%, 380px);
+	/* Derive the height from the WIDTH via aspect-ratio. (Do NOT use
+	   height: calc(min(100% …) * .85) here: a percent in `height` resolves
+	   against the parent's height, which is indefinite -> collapses. The old
+	   code used vw for this reason; vw broke the phone layout, so we use the
+	   width-relative aspect-ratio instead.) */
+	aspect-ratio: 1 / 0.85;
 	margin: 0 auto; }
+@supports not (aspect-ratio: 1 / 1) {
+	/* Legacy WebViews (pre-Chrome 88): aspect-ratio is ignored there and
+	   height must be set explicitly, else the box collapses. vw is wrong
+	   for layout width but harmless as a height proxy on engines old
+	   enough to lack aspect-ratio. */
+	.gauge-box { height: calc(min(88vw, 380px) * 0.85); }
+}
 @media (min-width: 900px) {
 	/* On wide screens give the gauge more room so it doesn't look tiny next
 	   to the right-hand results column. */
-	.gauge-box { width: min(420px, 100%); height: calc(min(420px, 100%) * 0.85); }
+	.gauge-box { width: min(420px, 100%); }
 }
 #gauge { width: 100%; height: 100%; display: block; }
 
@@ -150,6 +168,23 @@ window.BST_API = '<%=base%>';
 .res-card.dl .v { color: var(--dl); }
 .res-card.ul .v { color: var(--up); }
 .res-card.ping .v { color: var(--accent2); }
+/* Narrow phones (~360-400px CSS px): with three cards side by side each one
+   is only ~100px wide. A fixed 30px value font makes "935.11 Mbps" wider
+   than its card (the 163.54 UPLOAD clipping in the phone screenshot). Shrink
+   the font, the gaps and the inner padding on small screens so all three
+   cards fit edge-to-edge without horizontal overflow. */
+@media (max-width: 640px) {
+	.speedtest-wrap { padding: 20px 10px 32px; }
+	.results { gap: 8px; }
+	.res-card { padding: 12px 6px 10px; min-width: 0; }
+	.res-card .k { font-size: 10px; letter-spacing: 1px; }
+	/* fluid: ~16px on 320px phones, ~18px on 360-400px, capped 20px */
+	.res-card .v { font-size: clamp(15px, 5vw, 20px); }
+	.res-card .v .unit { font-size: 10px; margin-left: 0; }
+	.res-card .s { font-size: 10px; }
+	.settings { padding: 12px 10px; }
+	.settings .row { gap: 10px; }
+}
 
 /* settings */
 .settings { margin-top: 22px; background: var(--card); border:1px solid var(--line);

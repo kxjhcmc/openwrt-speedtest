@@ -45,13 +45,12 @@ openwrt-speedtest/
 
 把本仓库作为一个自定义 feeds 链接进 OpenWrt 源码的 `feeds.conf`。
 
-1. 进入 OpenWrt 源码目录,编辑 `feeds.conf`:
+1. 进入 OpenWrt 源码目录,编辑 `feeds.conf`，加入以下内容：
 
    ```
    src-link speedtest_owrt https://github.com/kxjhcmc/openwrt-speedtest
    ```
 
-   其中 `/path/to/openwrt-speedtest` 是本仓库的路径。
 
 2. 更新并安装 feeds:
 

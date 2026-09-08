@@ -202,6 +202,12 @@ window.BST_API = '<%=base%>';
 	background: rgba(8,16,32,.6); color: var(--txt); border:1px solid var(--line);
 	border-radius:8px; padding:7px 9px; font-size:14px; min-width: 96px; }
 .settings input[type=text] { min-width: 150px; }
+/* cnspeed node picker: hidden until 测速源 == 全球网测 (toggled via
+   .src-cnspeed on the wrapper). The free-text 指定节点 hides meanwhile so
+   the two never send conflicting node values. */
+.settings .cn-only { display: none; }
+.speedtest-wrap.src-cnspeed .settings .cn-only { display: flex; }
+.speedtest-wrap.src-cnspeed #itemNodeText { display: none; }
 .btn { background: var(--accent); color: #05222f; border:0; border-radius:10px;
 	padding: 9px 16px; font-weight:700; cursor:pointer; font-size:14px; }
 .btn:hover { filter: brightness(1.1); }
@@ -312,9 +318,21 @@ window.BST_API = '<%=base%>';
 							<option>8</option>
 						</select>
 					</div>
-					<div class="setting-item">
+					<div class="setting-item" id="itemNodeText">
 						<label for="setNode">指定节点</label>
 						<input type="text" id="setNode" placeholder="可留空(自动选优)" />
+					</div>
+					<!-- cnspeed(全球网测) only: a 2-level picker (province -> node)
+					     replaces the free-text above. Built from BST_CNNODES; the
+					     value sent to the backend is still just the node name, the
+					     same string the binary fuzzy-matches today. -->
+					<div class="setting-item cn-only" id="itemProv">
+						<label for="setProv">节点省份</label>
+						<select id="setProv"></select>
+					</div>
+					<div class="setting-item cn-only" id="itemCnNode">
+						<label for="setCnNode">节点</label>
+						<select id="setCnNode"></select>
 					</div>
 				</div>
 			</div>
@@ -326,6 +344,13 @@ window.BST_API = '<%=base%>';
 (function () {
 	"use strict";
 	var API = window.BST_API;
+
+	/* cnspeed(全球网测) node names grouped by province. Generated from serverlist.json
+	   at package build time — hostnames only, NO IPs: the better-speedtest binary
+	   resolves the selected hostname to the live server itself, so upstream IP
+	   churn cannot break this list. Regenerate when the upstream node roster
+	   changes (see project serverlist.json). 31 provinces, 609 nodes. */
+	var BST_CNNODES = {"北京":["北京电信","北京联通","北京移动","北京教育网"],"天津":["天津电信","天津联通","天津移动"],"河北":["石家庄电信","石家庄联通","石家庄移动"],"山西":["太原电信","太原联通","太原移动"],"内蒙古":["呼和浩特电信","呼和浩特联通","呼和浩特移动","乌兰察布移动","乌兰察布联通","乌兰察布电信","乌海移动","乌海联通","乌海电信","兴安移动","兴安电信","兴安联通","包头联通","包头电信","呼伦贝尔移动","呼伦贝尔联通","呼伦贝尔电信","巴彦淖尔移动","巴彦淖尔联通","赤峰移动","赤峰联通","赤峰电信","通辽移动","通辽联通","通辽电信","鄂尔多斯移动","鄂尔多斯联通","鄂尔多斯电信","锡盟移动","锡盟联通","阿盟移动","阿盟联通"],"辽宁":["沈阳电信","沈阳联通","沈阳移动","丹东电信","丹东联通","丹东移动","大连电信","大连联通","大连移动","抚顺电信","抚顺联通","抚顺移动","朝阳电信","朝阳联通","朝阳移动","本溪电信","本溪联通","本溪移动","盘锦电信","盘锦联通","盘锦移动","营口联通","营口移动","葫芦岛电信","葫芦岛联通","葫芦岛移动","辽阳电信","辽阳移动","铁岭电信","铁岭联通","铁岭移动","锦州电信","锦州联通","锦州移动","阜新电信","阜新联通","阜新移动","鞍山电信","鞍山联通","鞍山移动"],"吉林":["长春电信","长春联通","长春移动","吉林电信","吉林移动","四平联通","四平电信","延边联通","延边电信","延边移动","松原联通","松原电信","松原移动","白城联通","白城电信","白城移动","白山联通","白山电信","白山移动","辽源移动","通化联通","通化电信"],"黑龙江":["哈尔滨电信","哈尔滨联通","哈尔滨移动","七台河移动","七台河电信","伊春移动","伊春联通","伊春电信","佳木斯移动","佳木斯联通","佳木斯电信","双鸭山移动","双鸭山联通","双鸭山电信","大兴安岭移动","大兴安岭联通","大庆移动","大庆联通","大庆电信","牡丹江移动","牡丹江联通","牡丹江电信","绥化移动","绥化电信","鸡西移动","鸡西联通","鸡西电信","鹤岗移动","鹤岗联通","鹤岗电信","黑河移动","黑河联通","黑河电信","齐齐哈尔移动","齐齐哈尔电信"],"上海":["上海电信","上海联通","上海移动","上海教育网"],"江苏":["南京电信","南京联通","南京移动","南通移动","宿迁移动","常州移动","徐州移动","扬州移动","无锡移动","泰州移动","淮安移动","盐城移动","连云港移动","镇江移动"],"浙江":["杭州电信","杭州联通","杭州移动","丽水电信","丽水联通","丽水移动","台州电信","台州联通","台州移动","嘉兴电信","嘉兴联通","嘉兴移动","宁波电信","宁波联通","宁波移动","温州电信","温州联通","温州移动","湖州电信","湖州联通","湖州移动","绍兴电信","绍兴联通","绍兴移动","舟山电信","舟山联通","舟山移动","衢州电信","衢州联通","衢州移动","金华电信","金华联通","金华移动"],"安徽":["合肥电信","合肥联通","合肥移动","亳州联通","亳州移动","亳州电信","六安联通","六安移动","六安电信","安庆联通","安庆移动","安庆电信","宣城联通","宣城移动","宣城电信","宿州联通","宿州移动","宿州电信","池州联通","池州移动","池州电信","淮北联通","淮北移动","淮北电信","淮南联通","淮南移动","淮南电信","滁州联通","滁州移动","滁州电信","芜湖电信","芜湖联通","芜湖移动","蚌埠联通","蚌埠移动","蚌埠电信","铜陵联通","铜陵移动","铜陵电信","阜阳联通","阜阳移动","阜阳电信","马鞍山联通","马鞍山移动","马鞍山电信","黄山联通","黄山移动","黄山电信"],"福建":["福州电信","福州联通","福州移动","三明电信","三明移动","南平电信","南平移动","厦门电信","厦门移动","宁德电信","宁德移动","泉州电信","泉州移动","漳州电信","漳州移动","莆田电信","莆田移动","龙岩电信","龙岩移动"],"江西":["南昌电信","南昌联通","南昌移动","上饶移动","上饶联通","上饶电信","九江移动","九江联通","九江电信","吉安移动","吉安联通","宜春移动","宜春联通","宜春电信","抚州移动","抚州联通","抚州电信","新余移动","新余联通","新余电信","景德镇移动","景德镇联通","景德镇电信","萍乡移动","萍乡联通","萍乡电信","赣州移动","赣州联通","赣州电信","鹰潭移动","鹰潭联通","鹰潭电信"],"山东":["济南电信","济南联通","济南移动","济南电信2","济南联通2","济南移动2","东营电信2","临沂电信2","临沂联通2","临沂移动2","威海电信2","威海联通2","德州联通2","德州移动2","日照联通2","日照移动2","枣庄电信2","枣庄联通2","枣庄移动2","泰安电信2","泰安移动2","济宁电信2","济宁联通2","济宁移动2","淄博电信2","淄博移动2","滨州电信2","滨州联通2","潍坊电信2","潍坊联通2","潍坊移动2","烟台电信2","烟台联通2","烟台移动2","聊城电信2","聊城联通2","聊城移动2","菏泽电信2","菏泽联通2","菏泽移动2","青岛电信2"],"河南":["郑州电信","郑州联通","郑州移动","三门峡联通","三门峡移动","信阳联通","信阳移动","南阳联通","南阳移动","周口联通","周口移动","商丘联通","商丘移动","安阳联通","安阳移动","平顶山移动","开封联通","开封移动","新乡联通","新乡移动","洛阳联通","洛阳移动","济源联通","济源移动","漯河联通","濮阳联通","焦作联通","焦作移动","许昌联通","许昌移动","驻马店联通","驻马店移动","鹤壁移动"],"湖北":["武汉电信","武汉联通","武汉移动","十堰电信","咸宁电信","孝感电信","宜昌电信","恩施电信","潜江电信","荆州电信","荆门电信","襄阳电信","鄂州电信","随州电信","黄冈电信","黄石电信"],"湖南":["长沙电信","长沙联通","长沙移动","娄底电信","娄底移动","娄底联通","岳阳电信","岳阳移动","岳阳联通","常德电信","常德移动","常德联通","张家界电信","张家界移动","张家界联通","怀化电信","怀化移动","怀化联通","株洲电信","株洲移动","株洲联通","永州电信","永州移动","永州联通","湘潭移动","湘潭电信","湘潭联通","湘西电信","湘西联通","湘西移动","益阳电信","益阳移动","益阳联通","衡阳电信","衡阳移动","衡阳联通","邵阳电信","邵阳移动","邵阳联通","郴州电信","郴州移动","郴州联通"],"广东":["广州电信","广州联通","广州移动","广州教育网","广州移动2","广州移动3","东莞移动","东莞移动2","中山移动","中山移动2","云浮移动","云浮移动2","佛山移动","佛山移动2","惠州移动","惠州移动2","揭阳移动","揭阳移动2","梅州移动","梅州移动2","汕头移动","汕头移动2","汕尾移动2","江门移动","江门移动2","河源移动","河源移动2","深圳电信","深圳联通","深圳移动","深圳移动2","深圳移动3","清远移动","清远移动2","湛江移动","湛江移动2","潮州移动","潮州移动2","珠海移动","珠海移动2","肇庆移动","肇庆移动2","茂名移动","茂名移动2","阳江移动","阳江移动2","韶关移动2"],"广西":["南宁电信","南宁联通","南宁移动"],"海南":["海口电信","海口联通","海口移动"],"重庆":["重庆电信","重庆联通","重庆移动"],"四川":["成都电信","成都联通","成都移动","成都广电","泸州电信"],"贵州":["贵阳电信","贵阳联通","贵阳移动"],"云南":["昆明电信","昆明联通","昆明移动","临沧移动","临沧联通","临沧电信","丽江移动","丽江联通","丽江电信","保山移动","保山电信","大理移动","大理联通","德宏联通","德宏电信","怒江联通","怒江电信","文山联通","文山电信","昭通移动","昭通电信","普洱移动","普洱电信","楚雄移动","楚雄电信","玉溪电信","红河联通","红河电信","版纳移动","版纳联通","版纳电信","迪庆电信"],"西藏":["拉萨电信","拉萨联通","拉萨移动","山南电信","山南移动","山南联通","日喀则电信","日喀则移动","日喀则联通","昌都电信","昌都移动","昌都联通","林芝电信","林芝移动","林芝联通","那曲电信","那曲移动","那曲联通","阿里电信","阿里联通"],"陕西":["西安电信","西安联通","西安移动"],"甘肃":["兰州电信","兰州联通","兰州移动","临夏移动","临夏联通","临夏电信","嘉峪关移动","嘉峪关联通","嘉峪关电信","天水移动","天水联通","定西移动","定西联通","定西电信","平凉移动","平凉联通","平凉电信","庆阳移动","张掖联通","张掖电信","武威移动","武威电信","甘南移动","甘南联通","甘南电信","白银移动","白银联通","白银电信","酒泉联通","酒泉电信","金昌联通","金昌电信","陇南移动","陇南联通","陇南电信"],"青海":["西宁电信","西宁联通","西宁移动","果洛移动","果洛联通","果洛电信","格尔木移动","格尔木联通","格尔木电信","海东移动","海东联通","海北移动","海北联通","海南移动","海南联通","海南电信","海西移动","海西联通","海西电信","玉树移动","玉树联通","玉树电信","黄南移动","黄南联通","黄南电信"],"宁夏":["银川电信","银川联通","银川移动"],"新疆":["乌鲁木齐电信","乌鲁木齐联通","乌鲁木齐移动"]};
 	var $ = function (id) { return document.getElementById(id); };
 
 	var goBtn = $("goBtn"), centerOv = $("centerOv"),
@@ -355,6 +380,92 @@ window.BST_API = '<%=base%>';
 	};
 
 	var nodeSel = {};
+
+	/* ---------- cnspeed province/node cascade ----------
+	   When 测速源 == 全球网测 we swap the free-text node box for a
+	   2-level picker fed by BST_CNNODES (names only; the binary resolves
+	   the name -> live endpoint itself, so upstream IP churn is harmless).
+	   Whatever gets selected is sent as the SAME plain node-name string
+	   the user could type by hand ("泸州电信"), so backend/binary stay
+	   untouched. Other sources keep the text box exactly as before. */
+	var setSrc = $("setSrc"), setProv = $("setProv"), setCnNode = $("setCnNode");
+	var nodeAutoLoc = null;         // province auto-detected from the ip endpoint
+	var savedNode = null;           // explicit node from UCI config (beats auto-locate)
+	var userTouchedProv = false;    // user picked a province -> stop auto-locating
+	var userTouchedCnNode = false;  // user picked a node (incl. 自动选优) -> win over legacy text
+
+	function normProv(p) {
+		return (p || "").replace(/(维吾尔|壮族|回族|自治区|特别行政区|省|市|地区|盟)/g, "");
+	}
+	function fillProvinces(selNode) {
+		var provs = Object.keys(BST_CNNODES);
+		setProv.textContent = "";
+		provs.forEach(function (p) {
+			var o = document.createElement("option");
+			o.value = p; o.textContent = p;
+			setProv.appendChild(o);
+		});
+		// priority: explicit saved node's province > auto-located province > first
+		var want = null;
+		if (selNode) {
+			for (var i = 0; i < provs.length; i++) {
+				if (BST_CNNODES[provs[i]].indexOf(selNode) >= 0) { want = provs[i]; break; }
+			}
+		}
+		if (!want && selNode) {
+			// legacy free-text keyword (e.g. "成都"): if it is a substring of
+			// exactly one province's node names, jump there.
+			var hits = provs.filter(function (p) {
+				return BST_CNNODES[p].some(function (n) { return n.indexOf(selNode) >= 0; });
+			});
+			if (hits.length === 1) want = hits[0];
+		}
+		if (!want && nodeAutoLoc) {
+			// the ip endpoint may say "四川" or "广西壮族自治区"; match on the
+			// suffix-stripped form against our plain province keys.
+			var np = normProv(nodeAutoLoc);
+			for (var j = 0; j < provs.length; j++) {
+				if (normProv(provs[j]) === np) { want = provs[j]; break; }
+			}
+		}
+		if (!want) want = provs[0];
+		setProv.value = want;
+		fillNodes(selNode);
+	}
+	function fillNodes(selNode) {
+		var list = BST_CNNODES[setProv.value] || [];
+		setCnNode.textContent = "";
+		var o0 = document.createElement("option");
+		o0.value = ""; o0.textContent = "自动选优";
+		setCnNode.appendChild(o0);
+		// a saved node that isn't a known hostname (legacy free-text keyword
+		// like "成都") is still a valid fuzzy match for the binary: offer it
+		// so upgraded configs keep working until the user picks otherwise.
+		if (selNode && list.indexOf(selNode) < 0 && !userTouchedCnNode) {
+			var ol = document.createElement("option");
+			ol.value = selNode; ol.textContent = selNode + "（关键词）";
+			setCnNode.appendChild(ol);
+		}
+		list.forEach(function (n) {
+			var o = document.createElement("option");
+			o.value = n; o.textContent = n;
+			setCnNode.appendChild(o);
+		});
+		setCnNode.value = (selNode && (list.indexOf(selNode) >= 0
+			|| (!userTouchedCnNode && selNode))) ? selNode : "";
+	}
+	setProv.addEventListener("change", function () {
+		userTouchedProv = true;      // don't let a late ip lookup clobber the pick
+		fillNodes(null);
+	});
+	setCnNode.addEventListener("change", function () {
+		userTouchedCnNode = true;    // explicit pick (or 自动选优) overrides any legacy text node
+	});
+	// 全球网测 shows the cascade, other sources show the plain text box
+	function syncSrcUI() {
+		wrap.classList.toggle("src-cnspeed", setSrc.value === "cnspeed");
+	}
+	setSrc.addEventListener("change", syncSrcUI);
 
 	/* ---------- gauge drawing ---------- */
 	function tickIndex(v) {
@@ -759,11 +870,15 @@ window.BST_API = '<%=base%>';
 
 	/* ---------- actions ---------- */
 	function startTest() {
-		var qs = "src=" + encodeURIComponent($("setSrc").value) +
+		var src = $("setSrc").value;
+		// cnspeed: the cascade picker is the single source of truth for --node
+		// (empty == auto/by-latency). Other sources use the free-text box.
+		var node = (src === "cnspeed") ? setCnNode.value : $("setNode").value.trim();
+		var qs = "src=" + encodeURIComponent(src) +
 			"&mode=" + encodeURIComponent($("setMode").value) +
 			"&dur=" + encodeURIComponent($("setDur").value) +
 			"&multi=" + encodeURIComponent($("setMulti").value) +
-			"&node=" + encodeURIComponent($("setNode").value.trim());
+			"&node=" + encodeURIComponent(node);
 		statusLine.textContent = "启动中…";
 		getJSON("start?" + qs).then(function (r) {
 			if (r && r.ok === true) {
@@ -781,6 +896,9 @@ window.BST_API = '<%=base%>';
 
 	/* ---------- boot ---------- */
 	function boot() {
+		// build the cnspeed cascade before any async callback can read it
+		fillProvinces(null);
+		syncSrcUI();
 		// load defaults from UCI
 		getJSON("config").then(function (c) {
 			if (!c) return;
@@ -788,7 +906,10 @@ window.BST_API = '<%=base%>';
 			if (c.mode) $("setMode").value = c.mode;
 			if (c.dur && ["5","10","15","30"].indexOf(String(c.dur)) >= 0) $("setDur").value = String(c.dur);
 			if (c.multi && ["1","2","4","8"].indexOf(String(c.multi)) >= 0) $("setMulti").value = String(c.multi);
-			if (c.node) $("setNode").value = c.node;
+			if (c.node) { $("setNode").value = c.node; savedNode = c.node; }
+			syncSrcUI();
+			// preselect the cascade to the saved node (and its province)
+			if (savedNode) { userTouchedProv = false; fillProvinces(savedNode); }
 		}).catch(function () {});
 		// show ISP/IP
 		getJSON("ip").then(function (d) {
@@ -798,6 +919,11 @@ window.BST_API = '<%=base%>';
 				if (d.province) t.push(d.province);
 				if (d.city) t.push(d.city);
 				setChipText([(t.join(" · ") || "未知位置"), "IP " + d.ip]);
+				// auto-locate the province picker unless the user already picked
+				if (d.province) {
+					nodeAutoLoc = d.province;
+					if (!userTouchedProv && !savedNode) fillProvinces(null);
+				}
 			}
 		}).catch(function () {});
 		// resume an in-progress run on page load

@@ -392,7 +392,12 @@ window.BST_API = '<%=base%>';
 		nodeName: "",              // current node name (e.g. "成都电信")
 		// progressive per-item cards: which item has been measured already,
 		// and which node announcement started the current download series
-		pingDone: false, dlDone: false, ulDone: false, dlNode: ""
+		pingDone: false, dlDone: false, ulDone: false, dlNode: "",
+		// per-tick samples of the CURRENT attempt: {t, mbps, peak}. `t` is
+		// the sample's elapsed time (s) and `peak` the running peak the
+		// binary carries on every line (internal/report/progress.go) - the
+		// last sample's peak equals the direction peak reported at the end.
+		dlTicks: [], ulTicks: []
 	};
 
 	var nodeSel = {};
@@ -407,6 +412,7 @@ window.BST_API = '<%=base%>';
 	var setSrc = $("setSrc"), setProv = $("setProv"), setCnNode = $("setCnNode");
 	var nodeAutoLoc = null;         // province auto-detected from the ip endpoint
 	var savedNode = null;           // explicit node from UCI config (beats auto-locate)
+	var bstWarmup = 5;              // engine warmup_s (from /config; shipped config default)
 	var userTouchedProv = false;    // user picked a province -> stop auto-locating
 	var userTouchedCnNode = false;  // user picked a node (incl. 自动选优) -> win over legacy text
 
@@ -648,6 +654,9 @@ window.BST_API = '<%=base%>';
 			setPhase("下载中…");
 			state.cur = o.mbps || 0, state.peak = Math.max(state.peak, state.cur);
 			state.dlSeries.push({ t: o.t || 0, v: state.cur });
+			// mirror the engine's sample series (t + running peak) so the
+			// preview can replicate Summarize() exactly
+			state.dlTicks.push({ t: o.t || 0, v: state.cur, peak: o.peak || 0 });
 			// first download sample of a series: its card is the one being
 			// measured right now (value lands when the direction finishes)
 			if (state.dlSeries.length === 1 && !state.dlDone) {
@@ -660,10 +669,11 @@ window.BST_API = '<%=base%>';
 			// finished: show its card immediately from the collected samples
 			// (the binary only prints the authoritative averages in the
 			// final "result" event, seconds later)
-			if (!state.dlDone && state.dlSeries.length) finalizeDlCard();
+			if (!state.dlDone && state.dlTicks.length) finalizeDlCard();
 			setPhase("上传中…");
 			state.cur = o.mbps || 0; state.peak = Math.max(state.peak, state.cur);
 			state.ulSeries.push({ t: o.t || 0, v: state.cur });
+			state.ulTicks.push({ t: o.t || 0, v: state.cur, peak: o.peak || 0 });
 			// first upload sample: mark the UPLOAD card as being measured
 			if (state.ulSeries.length === 1 && !state.ulDone) {
 				setCardState("Ul", "active");
@@ -772,24 +782,25 @@ window.BST_API = '<%=base%>';
 			if (nm && nm !== state.dlNode) {
 				state.dlNode = nm;
 				state.dlSeries = [];
+				state.dlTicks = [];
+				state.dlPreview = null;
 				state.dlDone = false;
 				setCardState("Dl", "pending");
 			}
 		}
 	}
 	/* Show the DOWNLOAD card from the collected per-tick samples. Called
-	   on the first upload tick (download direction just finished). */
+	   on the first upload tick (download direction just finished). The
+	   number replicates the engine's own Summarize() (warmup-excluded),
+	   so the final "result" later overwrites it with the SAME value. */
 	function finalizeDlCard() {
 		state.dlDone = true;
-		if (!state.dlSeries.length) return;
-		var sum = 0, peak = 0;
-		state.dlSeries.forEach(function (p) {
-			sum += p.v;
-			if (p.v > peak) peak = p.v;
-		});
-		setCardState("Dl", "done");
-		setResultVal($("rvDl"), sum / state.dlSeries.length);
-		$("rsDl").textContent = peak > 0 ? "峰值 " + fmt(peak) + " Mbps" : "已完成";
+		if (!state.dlTicks.length) return;
+		var r = engineAverage(state.dlTicks, bstWarmup);
+		state.dlPreview = r;            // renderResult() re-shows this exact
+		setCardState("Dl", "done");     // number instead of dl_avg: no jump
+		setResultVal($("rvDl"), r.avg);
+		$("rsDl").textContent = r.peak > 0 ? "峰值 " + fmt(r.peak) + " Mbps" : "已完成";
 	}
 	/* At report time, any card still marked "being measured" produced
 	   nothing usable (or the run died): drop the stale 测速中… hint. */
@@ -801,6 +812,36 @@ window.BST_API = '<%=base%>';
 				$("rs" + k).textContent = "—";
 			}
 		});
+	}
+	/* Engine-average, VIEW-side. The binary computes its final dl/ul
+	   averages in internal/engine/stats.go Summarize: mean of the per-
+	   second samples with T > warmup, plus their max. (Same for the
+	   adaptive and the pool paths.) Our naive "mean of every tick"
+	   preview was systematically LOW: the connection ramp-up seconds sit
+	   inside the binary's warmup window and were being averaged in.
+	   Replicating Summarize here removes that gap almost entirely - the
+	   only remaining difference is float rounding (both sides round to
+	   2 decimals independently). `warmup` comes from the shipped
+	   config.json via the /config endpoint (defaults to 5 s, the value
+	   in /etc/better-speedtest/config.json). */
+	function engineAverage(ticks, warmup) {
+		if (!ticks || !ticks.length) return { avg: 0, peak: 0 };
+		var peak = 0, sum = 0, n = 0;
+		ticks.forEach(function (p) {
+			var pk = (p.peak > p.v) ? p.peak : p.v;   // binary's running peak
+			if (pk > peak) peak = pk;
+			// ">=" not ">": the tick's true elapsed is ALWAYS a hair past
+			// its nominal second (ticker fires no earlier than every), so a
+			// sample reported as t=5.0 has true T>5 and the engine keeps it.
+			if (p.t >= warmup) { sum += p.v; n++; }
+		});
+		if (!n) {                                     // warmup swallowed every
+			n = 0; sum = 0;                           // sample: Summarize's
+			ticks.forEach(function (p) {              // keep-all fallback
+				sum += p.v; n++;
+			});
+		}
+		return { avg: sum / n, peak: peak };
 	}
 	function showError(msg) {
 		statusLine.textContent = "⚠ " + msg;
@@ -817,6 +858,7 @@ window.BST_API = '<%=base%>';
 	function enterIdle() {
 		state.idle = true; state.running = false; state.done = false;
 		state.cur = 0; state.peak = 0; state.dlSeries = []; state.ulSeries = []; state.result = null; state.probes = [];
+		state.dlTicks = []; state.ulTicks = []; state.dlPreview = null;
 		centerOv.className = "center-overlay";
 		wrap.classList.remove("is-running");
 		goBtn.textContent = "GO";
@@ -834,6 +876,7 @@ window.BST_API = '<%=base%>';
 		state.idle = false; state.running = true; state.done = false;
 		state.offset = 0; state.cur = 0; state.peak = 0;
 		state.dlSeries = []; state.ulSeries = []; state.result = null; state.probes = [];
+		state.dlTicks = []; state.ulTicks = []; state.dlPreview = null;
 		centerOv.className = "center-overlay running";
 		wrap.classList.add("is-running");
 		cval.textContent = "0";
@@ -863,7 +906,7 @@ window.BST_API = '<%=base%>';
 			setCardState(k, pending ? "pending" : null);
 		});
 		state.pingDone = false; state.dlDone = false; state.ulDone = false;
-		state.dlNode = "";
+		state.dlNode = ""; state.dlPreview = null; state.dlShown = 0;
 	}
 	function fmt(x) { return (Math.round(x * 100) / 100).toString(); }
 	/* set the numeric value of a result card, with a small muted "Mbps"
@@ -912,9 +955,26 @@ window.BST_API = '<%=base%>';
 			$("rsPing").textContent = pj;
 			setCardState("Ping", "done");
 		}
-		if (r.dl_avg > 0) {
-			setResultVal($("rvDl"), r.dl_avg);
-			$("rsDl").textContent = "峰值 " + fmt(r.dl_peak) + " Mbps" +
+		if (r.dl_avg > 0 || (state.dlPreview && state.dlPreview.avg > 0)) {
+			/* No-jump rule: when the download card was already filled by
+			   finalizeDlCard() (engine-Summarize replica over the very same
+			   per-tick samples the binary averages), KEEP that number and
+			   only enrich the sub-line with the authoritative connection
+			   count. The binary's dl_avg differs from the replica by at
+			   most float rounding; re-printing it made the card visibly
+			   "jump" the moment the run wrapped up. dl_avg still fills the
+			   card when no preview exists (e.g. page opened after the run
+			   ended, or download-only mode where the card only fills here). */
+			var dlAvg, dlPeak;
+			if (state.dlPreview && state.dlPreview.avg > 0) {
+				dlAvg = state.dlPreview.avg;
+				dlPeak = state.dlPreview.peak > 0 ? state.dlPreview.peak : r.dl_peak;
+			} else {
+				dlAvg = r.dl_avg; dlPeak = r.dl_peak;
+			}
+			state.dlShown = dlAvg;
+			setResultVal($("rvDl"), dlAvg);
+			$("rsDl").textContent = "峰值 " + fmt(dlPeak) + " Mbps" +
 				(r.dl_conns > 0 ? " · " + r.dl_conns + " 连接" : "");
 			setCardState("Dl", "done");
 		}
@@ -929,9 +989,10 @@ window.BST_API = '<%=base%>';
 			$("rsUl").textContent = r.ul_msg;
 			setCardState("Ul", "done");
 		}
-		var last = state.dlSeries.length ? state.dlSeries[state.dlSeries.length-1].v : 0;
-		// final gauge shows the max avg
-		drawGauge(Math.max(r.dl_avg, r.ul_avg, last), null);
+		// final gauge shows the max avg — use the number the DL card actually
+		// displays (state.dlShown) so gauge and card can never disagree
+		var dlShown = state.dlShown || r.dl_avg;
+		drawGauge(Math.max(dlShown, r.ul_avg), null);
 		var nodeInfo = [];
 		if (r.node) nodeInfo.push(r.node);
 		if (r.source) nodeInfo.push(r.source);
@@ -1039,6 +1100,10 @@ window.BST_API = '<%=base%>';
 			if (c.mode) $("setMode").value = c.mode;
 			if (c.dur && ["5","10","15","30"].indexOf(String(c.dur)) >= 0) $("setDur").value = String(c.dur);
 			if (c.multi && ["1","2","4","8"].indexOf(String(c.multi)) >= 0) $("setMulti").value = String(c.multi);
+			// engine warmup_s: the download-card preview replicates the
+			// binary's warmup-excluded Summarize() and must filter with the
+			// same window the engine used (controller reads config.json)
+			if (c.warmup && isFinite(+c.warmup) && +c.warmup >= 0) bstWarmup = +c.warmup;
 			if (c.node) { $("setNode").value = c.node; savedNode = c.node; }
 			syncSrcUI();
 			// preselect the cascade to the saved node (and its province)

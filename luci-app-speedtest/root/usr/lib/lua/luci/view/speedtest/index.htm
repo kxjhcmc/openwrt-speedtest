@@ -160,7 +160,8 @@ window.BST_API = '<%=base%>';
 	.results { margin-top: 0; }
 }
 .res-card { flex:1; background: var(--card); border:1px solid var(--line); border-radius:12px;
-	padding: 14px 12px 12px; text-align:center; }
+	padding: 14px 12px 12px; text-align:center;
+	transition: opacity .3s ease, border-color .3s ease, box-shadow .3s ease; }
 .res-card .k { font-size: 11px; letter-spacing:2px; color: var(--muted); }
 .res-card .v { font-size: 30px; font-weight: 800; margin-top:6px; }
 .res-card .v .unit { font-size: 12px; color: var(--muted); font-weight:400; margin-left: 2px; }
@@ -168,6 +169,15 @@ window.BST_API = '<%=base%>';
 .res-card.dl .v { color: var(--dl); }
 .res-card.ul .v { color: var(--up); }
 .res-card.ping .v { color: var(--accent2); }
+/* Progressive cards: when a run starts every card is "pending" (dimmed,
+   no value yet); the moment ITS item has been measured the card pops to
+   full opacity with the value - latency (node probe) first, then
+   download (first upload tick), then upload (final result) - instead of
+   all three cards appearing together only after the whole test ends.
+   The card being measured right now gets a subtle glowing border. */
+.res-card.pending { opacity: .45; }
+.res-card.active { opacity: 1; border-color: rgba(99,224,255,.5); box-shadow: 0 0 14px rgba(99,224,255,.15); }
+.res-card.done { opacity: 1; }
 /* Narrow phones (~360-400px CSS px): with three cards side by side each one
    is only ~100px wide. A fixed 30px value font makes "935.11 Mbps" wider
    than its card (the 163.54 UPLOAD clipping in the phone screenshot). Shrink
@@ -254,17 +264,20 @@ window.BST_API = '<%=base%>';
 
 		<div class="bst-right">
 			<div class="results" id="results">
-				<div class="res-card ping">
+				<!-- ids on the card shells let the JS toggle per-card state
+				     classes (pending/active/done) for progressive display:
+				     each card fills in as soon as its own item is tested. -->
+				<div class="res-card ping" id="rcPing">
 					<div class="k">延迟 PING</div>
 					<div class="v" id="rvPing">—</div>
 					<div class="s" id="rsPing">—</div>
 				</div>
-				<div class="res-card dl">
+				<div class="res-card dl" id="rcDl">
 					<div class="k">下载 DOWNLOAD</div>
 					<div class="v" id="rvDl">—</div>
 					<div class="s" id="rsDl">—</div>
 				</div>
-				<div class="res-card ul">
+				<div class="res-card ul" id="rcUl">
 					<div class="k">上传 UPLOAD</div>
 					<div class="v" id="rvUl">—</div>
 					<div class="s" id="rsUl">—</div>
@@ -376,7 +389,10 @@ window.BST_API = '<%=base%>';
 		dlSeries: [], ulSeries: [], // {t, v}
 		result: null,
 		probes: [],
-		nodeName: ""               // current node name (e.g. "成都电信")
+		nodeName: "",              // current node name (e.g. "成都电信")
+		// progressive per-item cards: which item has been measured already,
+		// and which node announcement started the current download series
+		pingDone: false, dlDone: false, ulDone: false, dlNode: ""
 	};
 
 	var nodeSel = {};
@@ -620,6 +636,7 @@ window.BST_API = '<%=base%>';
 			   would immediately overwrite it ("成都电信" -> "上传中…"
 			   flash that was visible in the first screenshot). */
 			if (o.msg) setNode(o.msg);
+			handleNodeExtras(o.msg);
 			break;
 		case "probe":
 			if (o.msg) {
@@ -631,14 +648,35 @@ window.BST_API = '<%=base%>';
 			setPhase("下载中…");
 			state.cur = o.mbps || 0, state.peak = Math.max(state.peak, state.cur);
 			state.dlSeries.push({ t: o.t || 0, v: state.cur });
+			// first download sample of a series: its card is the one being
+			// measured right now (value lands when the direction finishes)
+			if (state.dlSeries.length === 1 && !state.dlDone) {
+				setCardState("Dl", "active");
+				$("rsDl").textContent = "测速中…";
+			}
 			break;
 		case "upload":
+			// the first upload sample means the DOWNLOAD direction just
+			// finished: show its card immediately from the collected samples
+			// (the binary only prints the authoritative averages in the
+			// final "result" event, seconds later)
+			if (!state.dlDone && state.dlSeries.length) finalizeDlCard();
 			setPhase("上传中…");
 			state.cur = o.mbps || 0; state.peak = Math.max(state.peak, state.cur);
 			state.ulSeries.push({ t: o.t || 0, v: state.cur });
+			// first upload sample: mark the UPLOAD card as being measured
+			if (state.ulSeries.length === 1 && !state.ulDone) {
+				setCardState("Ul", "active");
+				$("rsUl").textContent = "测速中…";
+			}
 			break;
 		case "result":
 			state.result = o;
+			// the binary prints the final report the moment the last
+			// direction (usually upload) finishes: fill all cards NOW
+			// instead of waiting for the status poll to notice that the
+			// process exited (up to one extra poll interval later)
+			renderResult();
 			break;
 		case "error":
 			showError(o.msg || "测速失败");
@@ -688,9 +726,86 @@ window.BST_API = '<%=base%>';
 		state.nodeName = cleaned;
 		cnode.textContent = state.nodeName;
 	}
+
+	/* ---------- progressive result cards ----------
+	   Each card fills in the moment its own item has been measured:
+	     PING  <- a "node" event carrying "ping=XXms" (probe finished,
+	              BEFORE any transfer starts)
+	     DL    <- the first "upload" tick (the download direction just
+	              ended); the average is computed from the collected
+	              per-tick samples, peak from their max
+	     UL    <- the final "result" event (rendered immediately, no
+	              waiting for the status poll to see the process exit)
+	   Cards are dimmed ("pending") until reached, glow while measured
+	   ("active") and pop to full value ("done"). enterDone()'s
+	   renderResult() still overwrites everything with the authoritative
+	   byte-counted numbers once the run wraps up. */
+	function setCardState(kind, st) {
+		var el = $("rc" + kind);          // rcPing / rcDl / rcUl
+		if (!el) return;
+		el.classList.remove("pending", "active", "done");
+		if (st) el.classList.add(st);
+	}
+	function handleNodeExtras(msg) {
+		msg = msg || "";
+		// 1. "… ping=11ms …" carries the measured latency -> fill the PING
+		//    card right away. Every ping announcement wins (on a candidate
+		//    retry the binary re-pings the next node and restarts).
+		var m = msg.match(/ping=([\d.]+)\s*ms/);
+		if (m) {
+			state.pingDone = true;
+			setCardState("Ping", "done");
+			$("rvPing").textContent = parseFloat(m[1]).toFixed(1);
+			$("rsPing").textContent = "实测延迟";
+		} else if (!state.pingDone) {
+			// node selection/probing started: the latency test is imminent
+			setCardState("Ping", "active");
+		}
+		// 2. a "…下载中" announcement immediately precedes a download run.
+		//    When it names a DIFFERENT node than the running series (the
+		//    binary moved to the next candidate after a failure), drop the
+		//    stale samples so card/curve only reflect the attempt that
+		//    will actually be scored. Same-node re-announcements keep the
+		//    series (mirrors the setNode() pinning above).
+		if (/下载中/.test(msg)) {
+			var nm = (state.nodeName || "").split(/\s+/)[0];
+			if (nm && nm !== state.dlNode) {
+				state.dlNode = nm;
+				state.dlSeries = [];
+				state.dlDone = false;
+				setCardState("Dl", "pending");
+			}
+		}
+	}
+	/* Show the DOWNLOAD card from the collected per-tick samples. Called
+	   on the first upload tick (download direction just finished). */
+	function finalizeDlCard() {
+		state.dlDone = true;
+		if (!state.dlSeries.length) return;
+		var sum = 0, peak = 0;
+		state.dlSeries.forEach(function (p) {
+			sum += p.v;
+			if (p.v > peak) peak = p.v;
+		});
+		setCardState("Dl", "done");
+		setResultVal($("rvDl"), sum / state.dlSeries.length);
+		$("rsDl").textContent = peak > 0 ? "峰值 " + fmt(peak) + " Mbps" : "已完成";
+	}
+	/* At report time, any card still marked "being measured" produced
+	   nothing usable (or the run died): drop the stale 测速中… hint. */
+	function settleStaleCards() {
+		["Ping", "Dl", "Ul"].forEach(function (k) {
+			var el = $("rc" + k);
+			if (el && el.classList.contains("active")) {
+				setCardState(k, "done");
+				$("rs" + k).textContent = "—";
+			}
+		});
+	}
 	function showError(msg) {
 		statusLine.textContent = "⚠ " + msg;
 		statusLine.className = "status-line err";
+		settleStaleCards();              // drop a stale "测速中…" card hint
 		setPhase("失败");
 		cphase.classList.add("err");
 	}
@@ -711,7 +826,7 @@ window.BST_API = '<%=base%>';
 		setPhase("等待开始");
 		setNode("");                     // clear node on idle reset
 		curveBox.className = "curve-box";
-		resetResults();
+		resetResults(false);
 		statusLine.textContent = "—";
 		statusLine.className = "status-line";
 	}
@@ -726,7 +841,7 @@ window.BST_API = '<%=base%>';
 		cphase.classList.remove("err");
 		setPhase("连接中…");
 		curveBox.className = "curve-box active";
-		resetResults();
+		resetResults(true);
 		statusLine.className = "status-line";
 	}
 	function enterDone() {
@@ -738,10 +853,17 @@ window.BST_API = '<%=base%>';
 		goBtn.textContent = "重新测速";
 		renderResult();
 	}
-	function resetResults() {
+	function resetResults(pending) {
 		$("rvPing").textContent = "—"; $("rsPing").textContent = "—";
 		$("rvDl").textContent = "—"; $("rsDl").textContent = "—";
 		$("rvUl").textContent = "—"; $("rsUl").textContent = "—";
+		// during a run every card starts dimmed ("pending") and pops in as
+		// its own item is measured; outside a run the cards are plain
+		["Ping", "Dl", "Ul"].forEach(function (k) {
+			setCardState(k, pending ? "pending" : null);
+		});
+		state.pingDone = false; state.dlDone = false; state.ulDone = false;
+		state.dlNode = "";
 	}
 	function fmt(x) { return (Math.round(x * 100) / 100).toString(); }
 	/* set the numeric value of a result card, with a small muted "Mbps"
@@ -766,6 +888,9 @@ window.BST_API = '<%=base%>';
 		}
 	}
 	function renderResult() {
+		// a card still marked "being measured" at report time either got
+		// its value in a branch below or produced nothing usable
+		settleStaleCards();
 		var r = state.result;
 		if (!r) {
 			// run ended without a machine-readable result: show the error we
@@ -783,18 +908,26 @@ window.BST_API = '<%=base%>';
 		}
 		if (r.ping > 0) {
 			$("rvPing").textContent = r.ping.toFixed(1);
-			var pj = r.jitter > 0 ? "抖动 " + r.jitter.toFixed(1) + " ms" : "";
+			var pj = r.jitter > 0 ? "抖动 " + r.jitter.toFixed(1) + " ms" : "实测延迟";
 			$("rsPing").textContent = pj;
+			setCardState("Ping", "done");
 		}
 		if (r.dl_avg > 0) {
 			setResultVal($("rvDl"), r.dl_avg);
 			$("rsDl").textContent = "峰值 " + fmt(r.dl_peak) + " Mbps" +
 				(r.dl_conns > 0 ? " · " + r.dl_conns + " 连接" : "");
+			setCardState("Dl", "done");
 		}
 		if (r.ul_avg > 0) {
 			setResultVal($("rvUl"), r.ul_avg);
 			$("rsUl").textContent = "峰值 " + fmt(r.ul_peak) + " Mbps" +
 				(r.ul_conns > 0 ? " · " + r.ul_conns + " 连接" : "");
+			setCardState("Ul", "done");
+		} else if (r.ul_msg) {
+			// the run completed but the source rejected the upload test:
+			// surface the binary's own reason on the card
+			$("rsUl").textContent = r.ul_msg;
+			setCardState("Ul", "done");
 		}
 		var last = state.dlSeries.length ? state.dlSeries[state.dlSeries.length-1].v : 0;
 		// final gauge shows the max avg

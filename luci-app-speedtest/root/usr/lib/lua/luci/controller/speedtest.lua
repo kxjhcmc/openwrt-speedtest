@@ -120,6 +120,20 @@ function action_config()
 	for _, k in ipairs({"src", "dur", "mode", "multi", "node", "wan_iface"}) do
 		c[k] = u:get("speedtest", "defaults", k) or ""
 	end
+	-- The view mirrors the engine's warmup-excluded average (upstream
+	-- internal/engine/stats.go Summarize) to render the download card the
+	-- moment the download direction ends. It must filter with the SAME
+	-- warmup_s the binary uses, so read it from the shipped config.json
+	-- (the file the backend exports as BETTER_SPEEDTEST_CONFIG). Plain
+	-- pattern match - no JSON parser dependency here. The view falls back
+	-- to 5 (the shipped default) when this is absent or unparsable.
+	c.warmup = "5"
+	local cf = io.open("/etc/better-speedtest/config.json", "r")
+	if cf then
+		local s = cf:read("*a") or ""
+		cf:close()
+		c.warmup = s:match('"warmup_s"%s*:%s*(%d+)') or c.warmup
+	end
 	http.prepare_content("application/json; charset=utf-8")
 	http.write_json(c)
 end

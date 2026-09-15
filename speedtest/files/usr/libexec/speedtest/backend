@@ -14,8 +14,11 @@
 #
 # Runtime state/logs live in /tmp/speedtest (tmpfs -> no flash wear).
 # The binary is run with BETTER_SPEEDTEST_CONFIG pointing at the persistent
-# /etc/better-speedtest/config.json, so mcc-mnc.csv and custom CDN sources
-# are written/read in a stable, writable place.
+# /etc/better-speedtest/config.json, so the config (and any files the binary
+# writes, e.g. refreshed server lists) live in a stable, writable place.
+# Note: the MCC-MNC operator table is embedded in the binary; the external
+# mcc-mnc.csv is NOT shipped. updates.mccmnc_url is set empty in config.json
+# to disable the periodic auto-download.
 
 BIN=/usr/bin/better-speedtest
 RUN=/tmp/speedtest

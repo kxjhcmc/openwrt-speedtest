@@ -235,8 +235,8 @@
     "dest": "/data/plugins/better-speedtest/better-speedtest"
   },
   "updates": {
-    "mccmnc_url": "https://mcc-mnc.net/mcc-mnc.csv",
-    "mccmnc_refresh_days": 7,
+    "mccmnc_url": "",
+    "mccmnc_refresh_days": 0,
     "serverlist_refresh_hours": 24
   },
   "http": {

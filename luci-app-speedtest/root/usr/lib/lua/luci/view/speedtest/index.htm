@@ -765,7 +765,7 @@ window.BST_API = '<%=base%>';
 		if (m) {
 			state.pingDone = true;
 			setCardState("Ping", "done");
-			$("rvPing").textContent = parseFloat(m[1]).toFixed(1);
+			setResultVal($("rvPing"), parseFloat(m[1]), " ms");
 			$("rsPing").textContent = "实测延迟";
 		} else if (!state.pingDone) {
 			// node selection/probing started: the latency test is imminent
@@ -913,12 +913,12 @@ window.BST_API = '<%=base%>';
 	   suffix attached as a separate styled element so we don't have to splice
 	   HTML strings through innerHTML (which doesn't survive every LuCI theme
 	   / content-filter combination - see "800.7<small> Mbps</small>" bug). */
-	function setResultVal(el, n) {
+	function setResultVal(el, n, unitText) {
 		while (el.firstChild) el.removeChild(el.firstChild);
 		el.appendChild(document.createTextNode(fmt(n)));
 		var unit = document.createElement("span");
 		unit.className = "unit";
-		unit.appendChild(document.createTextNode(" Mbps"));
+		unit.appendChild(document.createTextNode(unitText || " Mbps"));
 		el.appendChild(unit);
 	}
 	/* same idea for the chip block: build it from text nodes + elements so
@@ -950,7 +950,7 @@ window.BST_API = '<%=base%>';
 			return;
 		}
 		if (r.ping > 0) {
-			$("rvPing").textContent = r.ping.toFixed(1);
+			setResultVal($("rvPing"), r.ping, " ms");
 			var pj = r.jitter > 0 ? "抖动 " + r.jitter.toFixed(1) + " ms" : "实测延迟";
 			$("rsPing").textContent = pj;
 			setCardState("Ping", "done");
